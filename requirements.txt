@@ -1,0 +1,10 @@
+aiortc
+websockets
+pillow
+opencv-python
+imageio
+ffmpeg-python
+tk
+tkinterdnd2
+numpy
+numba

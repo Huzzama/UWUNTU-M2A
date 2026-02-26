@@ -1,0 +1,3 @@
+MAX_MB = 10
+VIDEO_LIMIT = 5  # segundos
+FRAME_LIMIT = 100
