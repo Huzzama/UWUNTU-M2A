@@ -50,7 +50,13 @@ class DecodedMedia:
     src_duration_s: Optional[float] = None
 
 
-def _pil_to_rgb_u8(im: Image.Image) -> np.ndarray:
+def _pil_to_rgb_u8(im: Image.Image, bg_rgb: tuple = (0, 0, 0)) -> np.ndarray:
+    """Convert a PIL image to HxWx3 uint8, compositing any alpha channel over bg_rgb."""
+    if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+        rgba = im.convert("RGBA")
+        bg = Image.new("RGBA", rgba.size, (*bg_rgb, 255))
+        bg.paste(rgba, mask=rgba.split()[3])   # composite alpha over background
+        return np.array(bg.convert("RGB"), dtype=np.uint8)
     return np.array(im.convert("RGB"), dtype=np.uint8)
 
 
@@ -58,6 +64,7 @@ def decode_media_bytes(
     data: bytes,
     filename: Optional[str] = None,
     mime: Optional[str] = None,
+    bg_rgb: tuple = (0, 0, 0),
 ) -> DecodedMedia:
     """
     Decodes bytes into either:
@@ -71,7 +78,7 @@ def decode_media_bytes(
         frames: List[np.ndarray] = []
         durations_ms: List[int] = []
         for frame in ImageSequence.Iterator(im):
-            frames.append(_pil_to_rgb_u8(frame))
+            frames.append(_pil_to_rgb_u8(frame, bg_rgb))
             durations_ms.append(int(frame.info.get("duration", 83)))  # ~12 fps
         avg_ms = max(1, int(round(sum(durations_ms) / max(1, len(durations_ms)))))
         src_fps = 1000.0 / avg_ms
@@ -83,7 +90,7 @@ def decode_media_bytes(
             src_duration_s=src_duration_s,
         )
 
-    return DecodedMedia(kind="image", frames_rgb=[_pil_to_rgb_u8(im)])
+    return DecodedMedia(kind="image", frames_rgb=[_pil_to_rgb_u8(im, bg_rgb)])
 
 
 # ─────────────────────────────────────────

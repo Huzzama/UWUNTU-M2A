@@ -94,11 +94,11 @@ C = {
     "yellow":     "#f7c948",
 }
 
-FONT_MONO  = ("JetBrains Mono", 11)
-FONT_MONO_S= ("JetBrains Mono", 10)
-FONT_UI    = ("Segoe UI", 11)
-FONT_TITLE = ("Segoe UI", 12, "bold")
-FONT_HEAD  = ("Segoe UI", 10)
+FONT_MONO  = ("Segoe UI", 14)
+FONT_MONO_S= ("Segoe UI", 13)
+FONT_UI    = ("Segoe UI", 14)
+FONT_TITLE = ("Segoe UI", 15, "bold")
+FONT_HEAD  = ("Segoe UI", 13)
 
 EFFECTS = [
     "ASCII", "Halftone", "Matrix Rain", "Dots",
@@ -172,17 +172,17 @@ class DarkSlider(tk.Frame):
         self.callback = callback
 
         tk.Label(self, text=label, bg=C["panel"], fg=C["text_dim"],
-                 font=FONT_MONO_S, width=14, anchor="w").pack(side="left")
+                 font=FONT_MONO_S, width=16, anchor="w").pack(side="left")
 
         self.var = tk.DoubleVar(value=default)
         self.val_label = tk.Label(self, text=fmt.format(default),
                                   bg=C["panel"], fg=C["accent"],
-                                  font=FONT_MONO_S, width=6, anchor="e")
+                                  font=FONT_MONO_S, width=7, anchor="e")
         self.val_label.pack(side="right")
 
         scale = tk.Scale(self, variable=self.var, from_=from_, to=to,
                          orient="horizontal", resolution=resolution,
-                         bg=C["panel"], fg=C["text"], troughcolor=C["border"],
+                         bg=C["panel"], fg=C["text"], troughcolor="#1a2033",
                          highlightthickness=0, activebackground=C["accent"],
                          sliderrelief="flat", bd=0, showvalue=False,
                          command=self._on_change)
@@ -233,18 +233,25 @@ class DarkDropdown(tk.Frame):
         super().__init__(parent, bg=C["panel"], **kwargs)
         self.callback = callback
         tk.Label(self, text=label, bg=C["panel"], fg=C["text_dim"],
-                 font=FONT_MONO_S, width=14, anchor="w").pack(side="left")
+                 font=FONT_MONO_S, width=16, anchor="w").pack(side="left")
         self.var = tk.StringVar(value=default or options[0])
         style = ttk.Style()
         style.configure("Dark.TCombobox",
-                         fieldbackground=C["active2"],
+                         fieldbackground="#ffffff",
                          background=C["active2"],
-                         foreground=C["text"],
-                         selectbackground=C["accent"],
+                         foreground="#000000",
+                         selectbackground="#ffffff",
+                         selectforeground="#000000",
                          arrowcolor=C["accent"])
+        # Style the dropdown listbox (option-add sets the popup font/colors)
+        self.master.option_add("*TCombobox*Listbox.font", ("Segoe UI", 13))
+        self.master.option_add("*TCombobox*Listbox.background", C["active2"])
+        self.master.option_add("*TCombobox*Listbox.foreground", C["text_bright"])
+        self.master.option_add("*TCombobox*Listbox.selectBackground", C["accent"])
+        self.master.option_add("*TCombobox*Listbox.selectForeground", C["text_bright"])
         cb = ttk.Combobox(self, textvariable=self.var, values=options,
                           style="Dark.TCombobox", state="readonly", width=18,
-                          font=FONT_MONO_S)
+                          font=("Segoe UI", 13))
         cb.pack(side="left", padx=(4, 0))
         cb.bind("<<ComboboxSelected>>", lambda e: self._on_change())
 
@@ -264,10 +271,11 @@ class SectionHeader(tk.Frame):
         self._toggle_cb = None
         self.arrow = tk.Label(self, text="▾" if not collapsed else "▸",
                                bg=C["sidebar"], fg=C["accent"],
-                               font=("Segoe UI", 10))
+                               font=("Segoe UI", 13))
         self.arrow.pack(side="left", padx=(4, 2))
-        lbl = tk.Label(self, text=title.upper(), bg=C["sidebar"], fg=C["text_bright"],)
-        lbl.pack(side="left", pady=4)
+        lbl = tk.Label(self, text=title.upper(), bg=C["sidebar"], fg=C["text_bright"],
+                        font=("Segoe UI", 13, "bold"))
+        lbl.pack(side="left", pady=5)
         self.bind("<Button-1>", self._click)
         lbl.bind("<Button-1>", self._click)
         self.arrow.bind("<Button-1>", self._click)
@@ -326,7 +334,8 @@ class SettingsPanel(tk.Frame):
         # Scrollable body
         canvas = tk.Canvas(self, bg=C["panel"], highlightthickness=0)
         sb = tk.Scrollbar(self, orient="vertical", command=canvas.yview,
-                          bg=C["panel"], troughcolor=C["bg"])
+                          bg=C["border2"], troughcolor=C["bg"], activebackground=C["accent"],
+                          relief="flat", bd=0)
         canvas.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
@@ -360,14 +369,14 @@ class SettingsPanel(tk.Frame):
     def _pad(self, parent=None) -> tk.Frame:
         p = parent or self._inner
         f = tk.Frame(p, bg=C["panel"])
-        f.pack(fill="x", padx=8, pady=2)
+        f.pack(fill="x", padx=18, pady=3)
         return f
 
     def _section_label(self, text, parent=None):
         p = parent or self._inner
         tk.Label(p, text=text, bg=C["panel"], fg=C["accent"],
-                 font=("Segoe UI", 10, "bold"), anchor="w",
-                 padx=8, pady=4).pack(fill="x")
+                 font=("Segoe UI", 14, "bold"), anchor="w",
+                 padx=18, pady=8).pack(fill="x")
 
     def _divider(self, parent=None):
         p = parent or self._inner
@@ -380,20 +389,20 @@ class SettingsPanel(tk.Frame):
 
         self.ascii_scale = DarkSlider(p, "Scale", 1, 4, 2, resolution=0.1,
                                       callback=self.app.schedule_preview, fmt="{:.1f}")
-        self.ascii_scale.pack(fill="x", padx=8, pady=1)
+        self.ascii_scale.pack(fill="x", padx=18, pady=2)
 
         self.ascii_spacing = DarkSlider(p, "Spacing", 0.5, 2.0, 1.0, resolution=0.05,
                                         callback=self.app.schedule_preview)
-        self.ascii_spacing.pack(fill="x", padx=8, pady=1)
+        self.ascii_spacing.pack(fill="x", padx=18, pady=2)
 
         self.ascii_width = DarkIntSlider(p, "Output Width", 0, 300, 100,
                                          callback=self.app.schedule_preview)
-        self.ascii_width.pack(fill="x", padx=8, pady=1)
+        self.ascii_width.pack(fill="x", padx=18, pady=2)
 
         self.ascii_charset = DarkDropdown(p, "Character Set",
                                           ["STANDARD", "DENSE", "BLOCKS4", "BLOCKS8", "DOTS"],
                                           callback=self.app.schedule_preview)
-        self.ascii_charset.pack(fill="x", padx=8, pady=2)
+        self.ascii_charset.pack(fill="x", padx=18, pady=3)
         self._divider()
 
     # ── Adjustments ───────────────────────────────────────────
@@ -403,27 +412,27 @@ class SettingsPanel(tk.Frame):
 
         self.brightness = DarkSlider(p, "Brightness", 0, 2, 1.0,
                                      callback=self.app.schedule_preview)
-        self.brightness.pack(fill="x", padx=8, pady=1)
+        self.brightness.pack(fill="x", padx=18, pady=2)
 
         self.contrast = DarkSlider(p, "Contrast", 0, 2, 1.0,
                                    callback=self.app.schedule_preview)
-        self.contrast.pack(fill="x", padx=8, pady=1)
+        self.contrast.pack(fill="x", padx=18, pady=2)
 
         self.saturation = DarkSlider(p, "Saturation", 0, 2, 1.0,
                                      callback=self.app.schedule_preview)
-        self.saturation.pack(fill="x", padx=8, pady=1)
+        self.saturation.pack(fill="x", padx=18, pady=2)
 
         self.hue = DarkSlider(p, "Hue Rotation", -180, 180, 0, resolution=1,
                               callback=self.app.schedule_preview, fmt="{:.0f}°")
-        self.hue.pack(fill="x", padx=8, pady=1)
+        self.hue.pack(fill="x", padx=18, pady=2)
 
         self.sharpness = DarkSlider(p, "Sharpness", 0, 10, 0,
                                     callback=self.app.schedule_preview)
-        self.sharpness.pack(fill="x", padx=8, pady=1)
+        self.sharpness.pack(fill="x", padx=18, pady=2)
 
         self.gamma = DarkSlider(p, "Gamma", 0.3, 3.0, 1.0,
                                 callback=self.app.schedule_preview)
-        self.gamma.pack(fill="x", padx=8, pady=1)
+        self.gamma.pack(fill="x", padx=18, pady=2)
         self._divider()
 
     # ── Color section ──────────────────────────────────────────
@@ -432,20 +441,21 @@ class SettingsPanel(tk.Frame):
         p = self._inner
 
         row = tk.Frame(p, bg=C["panel"])
-        row.pack(fill="x", padx=8, pady=2)
+        row.pack(fill="x", padx=18, pady=3)
         tk.Label(row, text="Mode", bg=C["panel"], fg=C["text_dim"],
-                 font=FONT_MONO_S, width=14, anchor="w").pack(side="left")
+                 font=FONT_MONO_S, width=16, anchor="w").pack(side="left")
         self.color_mode = ttk.Combobox(row,
                                         values=["Original", "Grayscale", "Sepia", "Invert"],
-                                        state="readonly", width=18, font=FONT_MONO_S)
+                                        state="readonly", width=18, font=("Segoe UI", 13),
+                                        style="Dark.TCombobox")
         self.color_mode.set("Original")
         self.color_mode.pack(side="left", padx=4)
         self.color_mode.bind("<<ComboboxSelected>>", lambda e: self.app.schedule_preview())
 
         bg_row = tk.Frame(p, bg=C["panel"])
-        bg_row.pack(fill="x", padx=8, pady=2)
+        bg_row.pack(fill="x", padx=18, pady=3)
         tk.Label(bg_row, text="Background", bg=C["panel"], fg=C["text_dim"],
-                 font=FONT_MONO_S, width=14, anchor="w").pack(side="left")
+                 font=FONT_MONO_S, width=16, anchor="w").pack(side="left")
         self._bg_swatch = tk.Label(bg_row, bg="#000000", width=3, relief="flat", cursor="hand2")
         self._bg_swatch.pack(side="left", padx=(4, 2))
         self._bg_swatch.bind("<Button-1>", lambda e: self._pick_bg_color())
@@ -459,7 +469,7 @@ class SettingsPanel(tk.Frame):
 
         self.intensity = DarkSlider(p, "Intensity", 0, 2, 1.2,
                                     callback=self.app.schedule_preview)
-        self.intensity.pack(fill="x", padx=8, pady=1)
+        self.intensity.pack(fill="x", padx=18, pady=2)
         self._divider()
 
     def _update_bg_swatch(self):
@@ -491,22 +501,22 @@ class SettingsPanel(tk.Frame):
         # chrom_max, chrom_r, chrom_g, chrom_b set the channel parameters.
         self.chrom_max = DarkIntSlider(p, "Max Displace", 0, 20, 4,
                                        callback=self.app.schedule_preview)
-        self.chrom_max.pack(fill="x", padx=8, pady=1)
+        self.chrom_max.pack(fill="x", padx=18, pady=2)
 
         self.chrom_r = DarkIntSlider(p, "Red Channel", 0, 30, 25,
                                      callback=self.app.schedule_preview)
-        self.chrom_r.pack(fill="x", padx=8, pady=1)
+        self.chrom_r.pack(fill="x", padx=18, pady=2)
 
         self.chrom_g = DarkIntSlider(p, "Green Channel", 0, 30, 30,
                                      callback=self.app.schedule_preview)
-        self.chrom_g.pack(fill="x", padx=8, pady=1)
+        self.chrom_g.pack(fill="x", padx=18, pady=2)
 
         self.chrom_b = DarkIntSlider(p, "Blue Channel", 0, 30, 30,
                                      callback=self.app.schedule_preview)
-        self.chrom_b.pack(fill="x", padx=8, pady=1)
+        self.chrom_b.pack(fill="x", padx=18, pady=2)
 
         reset_row = tk.Frame(p, bg=C["panel"])
-        reset_row.pack(fill="x", padx=8, pady=2)
+        reset_row.pack(fill="x", padx=18, pady=3)
         tk.Label(reset_row, text="Reset", bg=C["panel"], fg=C["accent"],
                  font=FONT_MONO_S, cursor="hand2").pack(side="left")
         self._divider()
@@ -517,27 +527,27 @@ class SettingsPanel(tk.Frame):
         p = self._inner
 
         self.invert = DarkCheck(p, "Invert", callback=self.app.schedule_preview)
-        self.invert.pack(fill="x", padx=8, pady=1)
+        self.invert.pack(fill="x", padx=18, pady=2)
 
         self.brightness_map = DarkSlider(p, "Brightness Map", 0, 2, 1.0,
                                          callback=self.app.schedule_preview)
-        self.brightness_map.pack(fill="x", padx=8, pady=1)
+        self.brightness_map.pack(fill="x", padx=18, pady=2)
 
         self.edge_enhance = DarkSlider(p, "Edge Enhance", 0, 10, 0,
                                        callback=self.app.schedule_preview)
-        self.edge_enhance.pack(fill="x", padx=8, pady=1)
+        self.edge_enhance.pack(fill="x", padx=18, pady=2)
 
         self.blur_amt = DarkSlider(p, "Blur", 0, 10, 0,
                                    callback=self.app.schedule_preview)
-        self.blur_amt.pack(fill="x", padx=8, pady=1)
+        self.blur_amt.pack(fill="x", padx=18, pady=2)
 
         self.quantize = DarkIntSlider(p, "Quantize Colors", 0, 256, 0,
                                       callback=self.app.schedule_preview)
-        self.quantize.pack(fill="x", padx=8, pady=1)
+        self.quantize.pack(fill="x", padx=18, pady=2)
 
         self.shape_match = DarkSlider(p, "Shape Matching", 0, 1, 0,
                                       callback=self.app.schedule_preview)
-        self.shape_match.pack(fill="x", padx=8, pady=1)
+        self.shape_match.pack(fill="x", padx=18, pady=2)
         self._divider()
 
     # ── Post-Processing ────────────────────────────────────────
@@ -553,16 +563,16 @@ class SettingsPanel(tk.Frame):
 
         self.bloom_thr = DarkSlider(p, "Threshold", 0, 1, 0.5,
                                     callback=self.app.schedule_preview)
-        self.bloom_thr.pack(fill="x", padx=8, pady=1)
+        self.bloom_thr.pack(fill="x", padx=18, pady=2)
         self.bloom_soft = DarkSlider(p, "Soft Threshold", 0, 1, 0.5,
                                      callback=self.app.schedule_preview)
-        self.bloom_soft.pack(fill="x", padx=8, pady=1)
+        self.bloom_soft.pack(fill="x", padx=18, pady=2)
         self.bloom_int = DarkSlider(p, "Intensity", 0, 2, 1.0,
                                     callback=self.app.schedule_preview)
-        self.bloom_int.pack(fill="x", padx=8, pady=1)
+        self.bloom_int.pack(fill="x", padx=18, pady=2)
         self.bloom_rad = DarkIntSlider(p, "Radius", 1, 50, 10,
                                        callback=self.app.schedule_preview)
-        self.bloom_rad.pack(fill="x", padx=8, pady=1)
+        self.bloom_rad.pack(fill="x", padx=18, pady=2)
 
         # Grain
         grain_hdr = tk.Frame(p, bg=C["panel"])
@@ -572,35 +582,35 @@ class SettingsPanel(tk.Frame):
 
         self.grain_int = DarkSlider(p, "Intensity", 0, 100, 40,
                                     callback=self.app.schedule_preview, fmt="{:.0f}")
-        self.grain_int.pack(fill="x", padx=8, pady=1)
+        self.grain_int.pack(fill="x", padx=18, pady=2)
         self.grain_size = DarkIntSlider(p, "Size", 1, 5, 1,
                                         callback=self.app.schedule_preview)
-        self.grain_size.pack(fill="x", padx=8, pady=1)
+        self.grain_size.pack(fill="x", padx=18, pady=2)
         self.grain_speed = DarkSlider(p, "Speed", 0, 100, 100,
                                       callback=self.app.schedule_preview, fmt="{:.0f}")
-        self.grain_speed.pack(fill="x", padx=8, pady=1)
+        self.grain_speed.pack(fill="x", padx=18, pady=2)
 
         # Chromatic / Scanlines / Vignette / CRT
         self.chrom_post_en = DarkCheck(p, "Chromatic Aberration",
                                        callback=self.app.schedule_preview)
-        self.chrom_post_en.pack(fill="x", padx=8, pady=1)
+        self.chrom_post_en.pack(fill="x", padx=18, pady=2)
 
         self.scanlines_en = DarkCheck(p, "Scanlines", callback=self.app.schedule_preview)
-        self.scanlines_en.pack(fill="x", padx=8, pady=1)
+        self.scanlines_en.pack(fill="x", padx=18, pady=2)
 
         self.scanlines_int = DarkSlider(p, "  ↳ Intensity", 0, 1, 0.4,
                                         callback=self.app.schedule_preview)
-        self.scanlines_int.pack(fill="x", padx=8, pady=1)
+        self.scanlines_int.pack(fill="x", padx=18, pady=2)
 
         self.vignette_en = DarkCheck(p, "Vignette", callback=self.app.schedule_preview)
-        self.vignette_en.pack(fill="x", padx=8, pady=1)
+        self.vignette_en.pack(fill="x", padx=18, pady=2)
 
         self.vignette_int = DarkSlider(p, "  ↳ Intensity", 0, 1, 0.5,
                                        callback=self.app.schedule_preview)
-        self.vignette_int.pack(fill="x", padx=8, pady=1)
+        self.vignette_int.pack(fill="x", padx=18, pady=2)
 
         self.crt_en = DarkCheck(p, "CRT Curve", callback=self.app.schedule_preview)
-        self.crt_en.pack(fill="x", padx=8, pady=1)
+        self.crt_en.pack(fill="x", padx=18, pady=2)
         self._divider()
 
     # ── Export section ─────────────────────────────────────────
@@ -612,7 +622,7 @@ class SettingsPanel(tk.Frame):
                  font=FONT_MONO_S, anchor="w", padx=8).pack(fill="x")
 
         grid = tk.Frame(p, bg=C["panel"])
-        grid.pack(fill="x", padx=8, pady=4)
+        grid.pack(fill="x", padx=18, pady=4)
 
         self._export_choice = tk.StringVar(value="PNG")
         self._export_cells: dict[str, dict] = {}
@@ -626,7 +636,7 @@ class SettingsPanel(tk.Frame):
             grid.columnconfigure(col_i, weight=1)
 
             lbl = tk.Label(cell, text=name, bg=C["active"], fg=C["text_bright"],
-                           font=("Segoe UI", 9, "bold"), anchor="w", padx=8, pady=4)
+                           font=("Segoe UI", 13, "bold"), anchor="w", padx=8, pady=4)
             lbl.pack(fill="x")
             ext_lbl = tk.Label(cell, text=ext, bg=C["active"], fg=C["text_dim"],
                                font=FONT_MONO_S, anchor="w", padx=8, pady=2)
@@ -652,7 +662,7 @@ class SettingsPanel(tk.Frame):
                  font=FONT_MONO_S, anchor="w", padx=8, pady=2).pack(fill="x",pady=(8, 2))
 
         self._export_btn = tk.Button(p, text="▶  Export", bg=C["accent"],
-                               fg=C["text_bright"], font=("Segoe UI", 9, "bold"),
+                               fg=C["text_bright"], font=("Segoe UI", 13, "bold"),
                                relief="flat", bd=0, padx=12, pady=8,
                                activebackground=C["accent2"],
                                activeforeground=C["text_bright"],
@@ -766,6 +776,61 @@ class SettingsPanel(tk.Frame):
         req.validate()
         return req
 
+    def build_settings_dict(self) -> dict:
+        """
+        Serialize all current widget values to a plain JSON-serializable dict.
+
+        Used by ClientApp to transmit settings to the host over WebSocket.
+        The host rebuilds a ConversionRequest from this dict via
+        host_app._build_request_from_settings().
+        """
+        return {
+            # ASCII
+            "ascii_scale":    self.ascii_scale.get(),
+            "ascii_spacing":  self.ascii_spacing.get(),
+            "ascii_width":    int(self.ascii_width.get()),
+            "ascii_charset":  self.ascii_charset.get(),
+            # Adjustments
+            "brightness":     self.brightness.get(),
+            "contrast":       self.contrast.get(),
+            "saturation":     self.saturation.get(),
+            "hue":            self.hue.get(),
+            "sharpness":      self.sharpness.get(),
+            "gamma":          self.gamma.get(),
+            # Color
+            "color_mode":     self.color_mode.get(),
+            "bg_color":       self._bg_hex_var.get(),
+            "intensity":      self.intensity.get(),
+            # Processing
+            "invert":         self.invert.get(),
+            "brightness_map": self.brightness_map.get(),
+            "edge_enhance":   self.edge_enhance.get(),
+            "blur_amt":       self.blur_amt.get(),
+            "quantize":       int(self.quantize.get()),
+            "shape_match":    self.shape_match.get(),
+            # Chromatic (raw channel params)
+            "chrom_max":      int(self.chrom_max.get()),
+            "chrom_r":        int(self.chrom_r.get()),
+            "chrom_g":        int(self.chrom_g.get()),
+            "chrom_b":        int(self.chrom_b.get()),
+            # Post-processing
+            "bloom_enabled":      self.bloom_en.get(),
+            "bloom_threshold":    self.bloom_thr.get(),
+            "bloom_softness":     self.bloom_soft.get(),
+            "bloom_intensity":    self.bloom_int.get(),
+            "bloom_radius":       int(self.bloom_rad.get()),
+            "grain_enabled":      self.grain_en.get(),
+            "grain_intensity":    self.grain_int.get(),
+            "grain_size":         int(self.grain_size.get()),
+            "grain_speed":        self.grain_speed.get(),
+            "chromatic_enabled":  self.chrom_post_en.get(),
+            "scanlines_enabled":  self.scanlines_en.get(),
+            "scanlines_intensity":self.scanlines_int.get(),
+            "vignette_enabled":   self.vignette_en.get(),
+            "vignette_intensity": self.vignette_int.get(),
+            "crt_enabled":        self.crt_en.get(),
+        }
+
 
 # ── Left sidebar ───────────────────────────────────────────────────────────────
 
@@ -790,7 +855,7 @@ class Sidebar(tk.Frame):
         bottom.pack(side="bottom", fill="x")
         tk.Frame(bottom, height=1, bg=C["border"]).pack(fill="x")
         tk.Label(bottom, text="UWUNTU v1.0", bg=C["sidebar"], fg=C["text_dim"],
-                 font=("Segoe UI", 10)).pack(side="left", padx=8, pady=4)
+                 font=("Segoe UI", 13)).pack(side="left", padx=8, pady=5)
 
     def _build_input_section(self):
         sec = CollapsibleSection(self, "Input", collapsed=False)
@@ -807,12 +872,18 @@ class Sidebar(tk.Frame):
                         highlightthickness=1, highlightbackground=C["border2"],
                         cursor="hand2")
         drop.pack(fill="x", padx=4, pady=4)
-        tk.Label(drop, text="Drop file or click to browse",
-                 bg=C["active"], fg=C["text_dim"], font=("Segoe UI", 10),
+        tk.Label(drop, text="⬇  Drop file here",
+                 bg=C["active"], fg=C["accent"], font=("Segoe UI", 14, "bold"),
                  pady=8).pack()
-        tk.Label(drop, text="PNG, JPG, JPEG, GIF, MP4, WEBM, MOV, AVI",
-                 bg=C["active"], fg=C["text_dim"], font=FONT_MONO_S,
+        tk.Label(drop, text="or click to browse",
+                 bg=C["active"], fg=C["text_dim"], font=("Segoe UI", 13),
                  pady=2).pack()
+        tk.Label(drop, text="PNG · JPG · GIF",
+                 bg=C["active"], fg=C["text_dim"], font=("Segoe UI", 13),
+                 pady=2).pack()
+        tk.Label(drop, text="MP4 · WEBM · MOV · AVI",
+                 bg=C["active"], fg=C["text_dim"], font=("Segoe UI", 13),
+                 pady=3).pack()
         drop.bind("<Button-1>", lambda e: self.app.open_file())
         for child in drop.winfo_children():
             child.bind("<Button-1>", lambda e: self.app.open_file())
@@ -834,11 +905,11 @@ class Sidebar(tk.Frame):
             row.pack(fill="x")
 
             dot = tk.Label(row, text="◦", bg=C["panel"], fg=C["text_dim"],
-                           font=("Segoe UI", 9), width=2)
+                           font=("Segoe UI", 13), width=2)
             dot.pack(side="left", padx=(6, 0))
 
             lbl = tk.Label(row, text=effect, bg=C["panel"], fg=C["text"],
-                           font=("Segoe UI", 9), anchor="w", padx=4, pady=3,
+                           font=("Segoe UI", 13), anchor="w", padx=4, pady=5,
                            cursor="hand2")
             lbl.pack(side="left", fill="x", expand=True)
 
@@ -880,7 +951,7 @@ class Sidebar(tk.Frame):
         sec.pack(fill="x")
         body = sec.body
         tk.Label(body, text="No presets saved yet.", bg=C["panel"],
-                 fg=C["text_dim"], font=FONT_MONO_S, padx=8, pady=6).pack(fill="x")
+                 fg=C["text_dim"], font=("Segoe UI", 13), padx=8, pady=8).pack(fill="x")
 
 
 # ── Center canvas ──────────────────────────────────────────────────────────────
@@ -918,7 +989,7 @@ class PreviewCanvas(tk.Frame):
 
         for icon, cmd in [("⊟", self.zoom_out), ("⊞", self.zoom_in), ("⊡", self.zoom_reset)]:
             b = tk.Label(tools, text=icon, bg=C["bg"], fg=C["text_dim"],
-                         font=("Segoe UI", 14), padx=5, cursor="hand2")
+                         font=("Segoe UI", 16), padx=5, cursor="hand2")
             b.pack(side="left", fill="y")
             b.bind("<Button-1>", lambda e, c=cmd: c())
 
@@ -969,14 +1040,18 @@ class PreviewCanvas(tk.Frame):
         self._canvas.delete("all")
         w = self._canvas.winfo_width() or 800
         h = self._canvas.winfo_height() or 600
-        self._canvas.create_text(w // 2, h // 2 - 14,
-                                  text="Awaiting input",
+        self._canvas.create_text(w // 2, h // 2 - 24,
+                                  text="⬇",
+                                  fill=C["border2"],
+                                  font=("Segoe UI", 36))
+        self._canvas.create_text(w // 2, h // 2 + 16,
+                                  text="Drop a file or use the sidebar to load an image",
                                   fill=C["text_dim"],
-                                  font=("Segoe UI", 14))
-        self._canvas.create_text(w // 2, h // 2 + 10,
-                                  text="Drop a file or select a source",
+                                  font=("Segoe UI", 11))
+        self._canvas.create_text(w // 2, h // 2 + 38,
+                                  text="PNG · JPG · GIF · MP4 · WEBM · MOV · AVI",
                                   fill=C["text_dim"],
-                                  font=("Segoe UI", 10))
+                                  font=("Segoe UI", 11))
 
     def _on_resize(self, event):
         if self._raw_image:
@@ -1043,15 +1118,6 @@ class StatusBar(tk.Frame):
                              font=FONT_MONO_S)
         self._msg.pack(side="left", padx=8)
 
-        reset_lbl = tk.Label(self, text="↺ Reset", bg=C["bg"], fg=C["accent"],
-                             font=FONT_MONO_S, padx=8, cursor="hand2")
-        reset_lbl.pack(side="right")
-        reset_lbl.bind("<Button-1>", lambda e: self._do_reset())
-
-    def _do_reset(self):
-        if self._app:
-            self._app.reset_settings()
-
     def set_message(self, text: str, color: str = C["text_dim"]):
         self._msg.config(text=text, fg=color)
 
@@ -1069,33 +1135,33 @@ def _build_effect_widgets(parent: tk.Frame, effect: str,
 
     def _lbl(text):
         l = tk.Label(p, text=text, bg=C["panel"], fg=C["accent"],
-                     font=("Segoe UI", 10, "bold"), anchor="w", padx=8, pady=4)
+                     font=("Segoe UI", 12, "bold"), anchor="w", padx=8, pady=4)
         l.pack(fill="x")
         widgets.append(l)
 
     def _slider(label, from_, to, default, resolution=0.01, fmt="{:.2f}", cb=None):
         s = DarkSlider(p, label, from_, to, default, resolution=resolution,
                        fmt=fmt, callback=cb or app.schedule_preview)
-        s.pack(fill="x", padx=8, pady=1)
+        s.pack(fill="x", padx=18, pady=2)
         widgets.append(s)
         return s
 
     def _int_slider(label, from_, to, default, cb=None):
         s = DarkIntSlider(p, label, from_, to, default,
                           callback=cb or app.schedule_preview)
-        s.pack(fill="x", padx=8, pady=1)
+        s.pack(fill="x", padx=18, pady=2)
         widgets.append(s)
         return s
 
     def _check(label, default=False):
         c = DarkCheck(p, label, default, callback=app.schedule_preview)
-        c.pack(fill="x", padx=8, pady=1)
+        c.pack(fill="x", padx=18, pady=2)
         widgets.append(c)
         return c
 
     def _dropdown(label, opts, default=None):
         d = DarkDropdown(p, label, opts, default, callback=app.schedule_preview)
-        d.pack(fill="x", padx=8, pady=2)
+        d.pack(fill="x", padx=18, pady=3)
         widgets.append(d)
         return d
 
@@ -1225,12 +1291,12 @@ class App:
 
     def _build_layout(self):
         # ── Global top title bar ────────────────────────────────────────────────
-        title_bar = tk.Frame(self.root, bg=C["bg"], height=36)
+        title_bar = tk.Frame(self.root, bg=C["bg"], height=48)
         title_bar.pack(fill="x", side="top")
         title_bar.pack_propagate(False)
         tk.Frame(title_bar, height=1, bg=C["border"]).pack(fill="x", side="bottom")
         tk.Label(title_bar, text="UWUNTU", bg=C["bg"], fg=C["text_bright"],
-                 font=("Segoe UI", 14, "bold")).pack(expand=True)
+                 font=("Segoe UI", 15, "bold")).pack(expand=True)
 
         # Main horizontal split
         pane = tk.PanedWindow(self.root, orient="horizontal",
@@ -1240,7 +1306,7 @@ class App:
 
         # Left sidebar (fixed ~180px)
         self.sidebar = Sidebar(pane, self)
-        pane.add(self.sidebar, minsize=160, width=180)
+        pane.add(self.sidebar, minsize=200, width=230)
 
         # Center canvas
         self.canvas = PreviewCanvas(pane)
@@ -1251,15 +1317,14 @@ class App:
 
         # Right settings panel (fixed ~280px)
         self.settings = SettingsPanel(pane, self)
-        pane.add(self.settings, minsize=240, width=290)
+        pane.add(self.settings, minsize=280, width=340)
 
         # Bottom status bar
         self.statusbar = StatusBar(self.root, app_ref=self)
         self.statusbar.pack(fill="x", side="bottom")
 
         # Register drop targets explicitly after all widgets exist
-        # (belt + suspenders — sidebar already does it during init, but we
-        #  re-register here to guarantee they're bound to the final DnD root)
+        # sidebar drop zone (frame + all children labels)
         try:
             self.register_drop_target(self.sidebar._drop_frame)
             for child in self.sidebar._drop_frame.winfo_children():
@@ -1267,7 +1332,9 @@ class App:
         except Exception as e:
             print(f"[DnD] sidebar drop frame re-registration failed: {e}")
 
+        # Center canvas — both the PreviewCanvas frame and its inner tk.Canvas
         try:
+            self.register_drop_target(self.canvas)
             self.register_drop_target(self.canvas._canvas)
         except Exception as e:
             print(f"[DnD] canvas drop target registration failed: {e}")
@@ -1376,7 +1443,9 @@ class App:
                 elif self._file_data:
                     # Decode image or GIF into frames
                     from ascii_engine.converter import decode_media_bytes
-                    decoded = decode_media_bytes(self._file_data, filename=self._file_name)
+                    _bg = getattr(getattr(req, "output", None), "color", None)
+                    _bg = tuple(getattr(_bg, "background_rgb", (0, 0, 0))) if _bg else (0, 0, 0)
+                    decoded = decode_media_bytes(self._file_data, filename=self._file_name, bg_rgb=_bg)
                     self._frames_rgb = decoded.frames_rgb
                     self._frames_fps = float(decoded.src_fps or 12.0)
                     # Try to read actual GIF frame delays
@@ -1770,25 +1839,78 @@ class App:
 
     def register_drop_target(self, widget):
         """Register a widget as a drag-and-drop target for file drops.
-        
-        Safe to call multiple times on the same widget — tkdnd handles re-registration.
-        Does NOT register the root window (call explicitly once from main() for that).
+
+        Handles visual hover feedback (Enter/Leave) and robust path parsing.
+        Safe to call multiple times — tkdnd silently re-registers.
         """
         def _handle_drop(event):
             raw = getattr(event, "data", "") or ""
-            print(f"[DnD] DROP RAW: {repr(raw)}")   # ← debug: remove once confirmed working
             paths = _parse_dnd_paths(raw)
-            print(f"[DnD] parsed paths: {paths}")   # ← debug
+            # Restore normal appearance after drop
+            _restore_widget(widget)
             if paths:
                 self.load_file(paths[0])
+            return event.action if hasattr(event, "action") else None
+
+        def _handle_enter(event):
+            """Visual feedback: highlight the widget when a file is dragged over it."""
+            _highlight_widget(widget)
+            if self.statusbar:
+                self.statusbar.set_message("  Release to load file…", C["accent"])
+            return event.action if hasattr(event, "action") else None
+
+        def _handle_leave(event):
+            """Restore widget when drag leaves."""
+            _restore_widget(widget)
+            if self.statusbar:
+                self.statusbar.set_message("", C["text_dim"])
+            return event.action if hasattr(event, "action") else None
+
+        def _highlight_widget(w):
+            """Apply a visible highlight to signal the widget accepts the drop."""
+            try:
+                cls = w.winfo_class()
+                if cls in ("Frame", "Label"):
+                    w.config(highlightthickness=2, highlightbackground=C["accent"])
+                elif cls == "Canvas":
+                    w.delete("dnd_overlay")
+                    ww = w.winfo_width() or 800
+                    wh = w.winfo_height() or 600
+                    w.create_rectangle(4, 4, ww - 4, wh - 4,
+                                       outline=C["accent"], width=3,
+                                       dash=(8, 4), tags="dnd_overlay")
+                    w.create_text(ww // 2, wh // 2,
+                                  text="Drop to load",
+                                  fill=C["accent"],
+                                  font=("Segoe UI", 16, "bold"),
+                                  tags="dnd_overlay")
+            except Exception:
+                pass
+
+        def _restore_widget(w):
+            """Remove the drop highlight."""
+            try:
+                cls = w.winfo_class()
+                if cls in ("Frame", "Label"):
+                    # Restore original border — use border2 for drop zone frames
+                    w.config(highlightthickness=1, highlightbackground=C["border2"])
+                elif cls == "Canvas":
+                    w.delete("dnd_overlay")
+                    # Re-draw placeholder if no image is loaded
+                    if not getattr(self, "_file_data", None) and \
+                       not getattr(self, "_frames_rgb", None):
+                        if self.canvas and w is self.canvas._canvas:
+                            self.canvas._placeholder()
+            except Exception:
+                pass
 
         try:
             from tkinterdnd2 import DND_FILES  # type: ignore
             widget.drop_target_register(DND_FILES)
-            widget.dnd_bind("<<Drop>>", _handle_drop)
-            print(f"[DnD] registered: {widget}")
+            widget.dnd_bind("<<Drop>>",       _handle_drop)
+            widget.dnd_bind("<<DragEnter>>",  _handle_enter)
+            widget.dnd_bind("<<DragLeave>>",  _handle_leave)
         except Exception as e:
-            # Only print — don't show in statusbar (may not exist yet)
             print(f"[DnD] register_drop_target failed for {widget}: {e}")
 
     def reset_settings(self):
@@ -1868,7 +1990,9 @@ class App:
                 rgb = self._frames_rgb[0]
             elif self._file_data:
                 from ascii_engine.converter import decode_media_bytes
-                decoded = decode_media_bytes(self._file_data, filename=self._file_name)
+                _bg2 = getattr(getattr(req, "output", None), "color", None)
+                _bg2 = tuple(getattr(_bg2, "background_rgb", (0, 0, 0))) if _bg2 else (0, 0, 0)
+                decoded = decode_media_bytes(self._file_data, filename=self._file_name, bg_rgb=_bg2)
                 rgb = decoded.frames_rgb[0]
                 self._frames_rgb = decoded.frames_rgb
             else:
@@ -1954,7 +2078,8 @@ def main():
 
     app = App(root)
 
-    # Register the root window as a drop target so you can drop anywhere
+    # Register the root window as a drop target so you can drop anywhere in the app
+    # (acts as a fallback when dropping outside specific registered zones)
     app.register_drop_target(root)
 
     root.mainloop()
