@@ -77,6 +77,7 @@ async def handler(websocket):
                     rooms[room_code] = {
                         "password":  password,
                         "host_name": client_name,
+                        "host_id":   client_id,
                         "clients":   [websocket],
                     }
                     print(f"[+] Room created: {room_code}  |  host: '{client_name}'  |  id: {client_id}")
@@ -109,6 +110,7 @@ async def handler(websocket):
 
                     rooms[room_code]["clients"].append(websocket)
                     host_name = rooms[room_code]["host_name"]
+                    host_id   = rooms[room_code]["host_id"]
 
                     print(f"[+] '{client_name}' joined room {room_code}  |  host: '{host_name}'  |  id: {client_id}")
 
@@ -116,6 +118,7 @@ async def handler(websocket):
                         "type":        "room_assigned",
                         "room":        room_code,
                         "host_name":   host_name,
+                        "host_id":     host_id,
                         "client_name": client_name,
                         "client_id":   client_id,
                     }))
@@ -185,7 +188,7 @@ async def main():
     port = 8765
     lan_ip = _get_local_ip()
 
-    async with websockets.serve(handler, host, port, max_size=100 * 1024 * 1024):
+    async with websockets.serve(handler, host, port):
         print(f"[Grainrad] Signaling server running")
         print(f"  Local:   ws://127.0.0.1:{port}")
         print(f"  LAN:     ws://{lan_ip}:{port}  ← share this with clients on the same network")
