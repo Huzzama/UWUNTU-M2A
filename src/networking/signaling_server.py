@@ -188,7 +188,7 @@ async def main():
     port = 8765
     lan_ip = _get_local_ip()
 
-    async with websockets.serve(handler, host, port):
+    async with websockets.serve(handler, host, port, max_size=100 * 1024 * 1024):
         print(f"[Grainrad] Signaling server running")
         print(f"  Local:   ws://127.0.0.1:{port}")
         print(f"  LAN:     ws://{lan_ip}:{port}  ← share this with clients on the same network")
