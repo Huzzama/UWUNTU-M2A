@@ -610,6 +610,78 @@ def _apply_crosshatch(rgb_u8: np.ndarray, p, seed: int) -> np.ndarray:
     return np.array(pil_out, dtype=np.uint8)
 
 
+def _apply_pixel_art(rgb_u8: np.ndarray, block_size: int, palette_name: str) -> np.ndarray:
+    """
+    Pixel-art conversion pipeline:
+      1. Downscale (average pooling — gives cleaner block colours)
+      2. Optional palette quantization (vectorised nearest-colour)
+      3. Upscale with nearest-neighbour (hard pixel edges)
+
+    Parameters
+    ----------
+    rgb_u8      : HxWx3 uint8 RGB array
+    block_size  : size of each "pixel" in the output (2..64)
+    palette_name: key from palettes.PALETTES; "none" skips quantization
+    """
+    h, w = rgb_u8.shape[:2]
+    bs = max(1, int(block_size))
+
+    # ── Step 1: Downscale via average pooling ─────────────────────────────────
+    # Crop to exact multiples so reshape works cleanly
+    ch = (h // bs) * bs
+    cw = (w // bs) * bs
+    cropped = rgb_u8[:ch, :cw]                  # HxWx3
+    small_h = ch // bs
+    small_w = cw // bs
+    # Reshape to (small_h, bs, small_w, bs, 3) then mean over the two block axes
+    small = (
+        cropped
+        .reshape(small_h, bs, small_w, bs, 3)
+        .mean(axis=(1, 3))
+        .astype(np.uint8)
+    )                                            # small_h x small_w x 3
+
+    # ── Step 2: Palette quantization ─────────────────────────────────────────
+    try:
+        from .palettes import get_palette        # relative import (inside package)
+    except ImportError:
+        try:
+            from ascii_engine.palettes import get_palette  # absolute fallback
+        except ImportError:
+            get_palette = lambda _: None
+
+    palette = get_palette(palette_name)
+    if palette:
+        pal_arr = np.array(palette, dtype=np.int32)   # N x 3
+        flat    = small.reshape(-1, 3).astype(np.int32)  # M x 3
+        # Vectorised L2 nearest-colour (chunked to keep memory sane for large palettes)
+        chunk_size = 4096
+        nearest_idx = np.empty(flat.shape[0], dtype=np.int32)
+        for start in range(0, flat.shape[0], chunk_size):
+            end = min(start + chunk_size, flat.shape[0])
+            diffs = flat[start:end, None, :] - pal_arr[None, :, :]  # M' x N x 3
+            dists = (diffs * diffs).sum(axis=2)                       # M' x N
+            nearest_idx[start:end] = dists.argmin(axis=1)
+        small = pal_arr[nearest_idx].reshape(small_h, small_w, 3).astype(np.uint8)
+
+    # ── Step 3: Nearest-neighbour upscale ─────────────────────────────────────
+    # np.repeat is the fastest nearest-neighbour upscale
+    upscaled = small.repeat(bs, axis=0).repeat(bs, axis=1)  # ch x cw x 3
+
+    # Rebuild full-size canvas (fill remainder with last-row/col colour if image
+    # didn't divide evenly — avoids a black border)
+    if ch < h or cw < w:
+        out = np.zeros((h, w, 3), dtype=np.uint8)
+        out[:ch, :cw] = upscaled
+        if cw < w:
+            out[:ch, cw:] = upscaled[:, -1:, :]
+        if ch < h:
+            out[ch:, :] = out[ch - 1:ch, :]
+        return out
+
+    return upscaled
+
+
 def _apply_wave_lines(rgb_u8: np.ndarray, p, seed: int) -> np.ndarray:
     """Warp rows by a sine wave."""
     h, w = rgb_u8.shape[:2]
@@ -706,6 +778,103 @@ def _apply_voronoi(rgb_u8: np.ndarray, p, seed: int) -> np.ndarray:
 # ─────────────────────────────────────────
 # Main entry point
 # ─────────────────────────────────────────
+
+def _apply_pixel_art_cycle(rgb_u8: np.ndarray, p, *, step: int) -> np.ndarray:
+    """
+    Palette cycling: shift hue of the quantised image by a small angle
+    derived from `step`, giving an animated shimmer effect when used
+    across frames (step = frame index).
+    """
+    if cv2 is None:
+        return rgb_u8
+    shift_deg = (step * getattr(p, "cycle_speed", 5)) % 360
+    if shift_deg == 0:
+        return rgb_u8
+    hsv = cv2.cvtColor(rgb_u8, cv2.COLOR_RGB2HSV).astype(np.float32)
+    hsv[..., 0] = (hsv[..., 0] + shift_deg / 2.0) % 180.0   # OpenCV hue is 0-179
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+
+
+def _apply_pixel_art_ghost(rgb_u8: np.ndarray, p) -> np.ndarray:
+    """
+    Ghost / afterimage: blend a slightly offset copy of the image behind
+    the original, simulating LCD ghosting or motion persistence.
+    """
+    offset = int(getattr(p, "ghost_offset", 2))
+    alpha  = float(getattr(p, "ghost_alpha",  0.35))
+    if offset <= 0 or alpha <= 0.0:
+        return rgb_u8
+    ghost = np.roll(rgb_u8, shift=offset, axis=1)   # shift right
+    out = np.clip(
+        rgb_u8.astype(np.float32) * (1.0 - alpha) + ghost.astype(np.float32) * alpha,
+        0, 255,
+    ).astype(np.uint8)
+    return out
+
+
+def _apply_pixel_art_dither(rgb_u8: np.ndarray, p, *, step: int) -> np.ndarray:
+    """
+    Ordered (Bayer) dither applied on top of the pixel-art image.
+    `step` offsets the Bayer matrix to create a shimmer animation on GIFs.
+    """
+    bayer4 = (1.0 / 16.0) * np.array(
+        [[ 0,  8,  2, 10],
+         [12,  4, 14,  6],
+         [ 3, 11,  1,  9],
+         [15,  7, 13,  5]],
+        dtype=np.float32,
+    )
+    h, w = rgb_u8.shape[:2]
+    # Roll the Bayer matrix by step so each frame looks slightly different
+    rolled = np.roll(bayer4, shift=step % 4, axis=0)
+    tiled  = np.tile(rolled, (h // 4 + 1, w // 4 + 1))[:h, :w]
+    f = rgb_u8.astype(np.float32)
+    strength = float(getattr(p, "dither_strength", 32.0))
+    f = f + (tiled - 0.5)[..., None] * strength
+    return _clip_u8(f)
+
+
+def _apply_pixel_art_crt(rgb_u8: np.ndarray, p) -> np.ndarray:
+    """
+    CRT scanlines tuned for pixel art: every other row is darkened,
+    preserving hard pixel edges (no blur).
+    """
+    intensity = float(getattr(p, "crt_intensity", 0.4))
+    if intensity <= 0.0:
+        return rgb_u8
+    out = rgb_u8.astype(np.float32)
+    out[1::2] *= (1.0 - intensity)
+    return _clip_u8(out)
+
+
+def _apply_pixel_art_fx(rgb_u8: np.ndarray, p, *, seed: int) -> np.ndarray:
+    """
+    Pixel Art FX stack (CRT / Ghost / Dither / Cycle).
+    All FX are opt-in via boolean attributes on `p` and can be combined.
+    """
+    if not isinstance(rgb_u8, np.ndarray):
+        raise TypeError("Pixel Art FX expects a numpy array (HxWx3 uint8).")
+    if rgb_u8.dtype != np.uint8:
+        rgb_u8 = _clip_u8(rgb_u8)
+
+    out_u8 = rgb_u8
+    step   = int(seed)   # treat seed as frame step for animated FX
+
+    # Cycle first so dither overlays the final palette
+    if getattr(p, "cycle", False):
+        out_u8 = _apply_pixel_art_cycle(out_u8, p, step=step)
+
+    if getattr(p, "ghost", False):
+        out_u8 = _apply_pixel_art_ghost(out_u8, p)
+
+    if getattr(p, "dither", False):
+        out_u8 = _apply_pixel_art_dither(out_u8, p, step=step)
+
+    if getattr(p, "crt", False):
+        out_u8 = _apply_pixel_art_crt(out_u8, p)
+
+    return out_u8
+
 
 def apply_filters(
     rgb_u8: np.ndarray,
@@ -810,6 +979,16 @@ def apply_filters(
 
     if params.voronoi.enabled:
         out_u8 = _apply_voronoi(out_u8, params.voronoi, seed)
+
+    # ── 3.5 Pixel Art ─────────────────────────────────────────────────────────
+    # Applied after colour adjustments but before edge/threshold/post-processing
+    # so that VHS, CRT-curve, grain etc. can still be stacked on top.
+    if params.pixel_art.enabled:
+        # 1) base pixel-art render (pixelate + palette reduce)
+        out_u8 = _apply_pixel_art(out_u8, params.pixel_art.block_size, params.pixel_art.palette)
+
+        # 2) Pixel Art FX (CRT / Ghost / Dither / Cycle)
+        out_u8 = _apply_pixel_art_fx(out_u8, params.pixel_art, seed=seed)
 
     # ── 4. Threshold / edge (ASCII helpers) ───────────────────
     if params.edge.enabled and params.edge.strength > 0.0:

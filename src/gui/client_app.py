@@ -166,6 +166,12 @@ class ClientApp(App):
             return   # no media loaded yet; nothing to reprocess
         payload = self.settings.build_settings_dict()
         payload["effect"] = self.sidebar.get_selected_effect() if self.sidebar else "ASCII"
+        # Include dialogue overlay state (not part of build_settings_dict)
+        payload["dlg_enabled"] = getattr(self, "_dlg_enabled", False)
+        payload["dlg_text"]    = getattr(self, "_dlg_text",    "")
+        payload["dlg_style"]   = getattr(self, "_dlg_style",   "terminal")
+        payload["dlg_name"]    = getattr(self, "_dlg_name",    "")
+        payload["dlg_pos"]     = getattr(self, "_dlg_pos",     1.0)
         self._p2p.send({
             "type":        "settings_update",
             "room":        self._room_code,

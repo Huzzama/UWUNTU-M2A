@@ -190,8 +190,19 @@ def _launch_p2p_integrated():
         )
         app.register_drop_target(root)
 
+    # ── OFFLINE flow ───────────────────────────────────────────────────────
+    def on_offline():
+        """Destroy the connection screen and launch the standalone app."""
+        scr = state["screen"]
+        if scr:
+            scr.destroy()
+            state["screen"] = None
+        from gui.gui_app import App
+        app = App(root)
+        app.register_drop_target(root)
+
     # ── Show connection screen ─────────────────────────────────────────────
-    state["screen"] = ConnectionScreen(root, on_host=on_host, on_join=on_join)
+    state["screen"] = ConnectionScreen(root, on_host=on_host, on_join=on_join, on_offline=on_offline)
     root.mainloop()
 
 

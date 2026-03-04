@@ -14,7 +14,8 @@ FpsResampleMode = Literal["keep", "downsample", "duplicate", "interpolate"]
 EffectName = Literal[
     "none", "ascii", "dithering", "halftone", "matrix_rain",
     "dots", "contour", "pixel_sort", "blockify", "threshold",
-    "edge_detection", "crosshatch", "wave_lines", "noise_field", "voronoi", "vhs"
+    "edge_detection", "crosshatch", "wave_lines", "noise_field", "voronoi", "vhs",
+    "pixel_art"
 ]
 
 
@@ -313,6 +314,18 @@ class VoronoiParams:
         self.num_cells = _clamp_int(int(self.num_cells), 5, 500)
 
 
+# ── NEW: Pixel Art params ─────────────────────────────────────────────────────
+
+@dataclass
+class PixelArtParams:
+    enabled: bool = False
+    block_size: int = 8       # 2..64 — controls the "pixel" size
+    palette: str = "PICO-8"  # palette name from palettes.PALETTES; "none" = no quantization
+
+    def validate(self) -> None:
+        self.block_size = _clamp_int(int(self.block_size), 2, 64)
+
+
 @dataclass
 class FilterParams:
     color: ColorAdjustParams = field(default_factory=ColorAdjustParams)
@@ -341,6 +354,9 @@ class FilterParams:
     noise_field: NoiseFieldParams = field(default_factory=NoiseFieldParams)
     voronoi: VoronoiParams = field(default_factory=VoronoiParams)
 
+    # NEW
+    pixel_art: PixelArtParams = field(default_factory=PixelArtParams)
+
     def validate(self) -> None:
         self.color.validate()
         self.threshold.validate()
@@ -363,6 +379,7 @@ class FilterParams:
         self.wave_lines.validate()
         self.noise_field.validate()
         self.voronoi.validate()
+        self.pixel_art.validate()
 
 
 # -----------------------------
@@ -550,6 +567,7 @@ class ConversionRequest:
                 wave_lines=WaveLinesParams(**(filters_d.get("wave_lines", {}) or {})),
                 noise_field=NoiseFieldParams(**(filters_d.get("noise_field", {}) or {})),
                 voronoi=VoronoiParams(**(filters_d.get("voronoi", {}) or {})),
+                pixel_art=PixelArtParams(**(filters_d.get("pixel_art", {}) or {})),
             ),
             output=OutputParams(
                 formats=list(output_d.get("formats", ["txt", "html", "png", "gif"])),

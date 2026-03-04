@@ -56,6 +56,7 @@ class ClientSession:
     expected_chunks: int   = 0
     chunks_received: dict  = field(default_factory=dict)
     processing:      bool  = False
+    pending_settings: dict  = field(default_factory=dict)  # buffered while busy
 
     card:           Optional[tk.Frame]  = None
     progress_label: Optional[tk.Label] = None
@@ -135,6 +136,90 @@ def _build_request_from_settings(s: dict):
     req.filters.crt_curve.enabled   = bool(s.get("crt_enabled", False))
 
     req.output.formats = ["png"]
+
+    # ── Effect-specific params ────────────────────────────────────────────
+    effect = s.get("effect", "ASCII")
+
+    if effect == "ASCII":
+        req.ascii.preprocess   = s.get("eff_preprocess",   "edges_threshold")
+        req.ascii.invert_ascii = bool(s.get("eff_invert_ascii", False))
+
+    elif effect == "Halftone":
+        req.filters.halftone.enabled   = True
+        req.filters.halftone.dot_size  = int(s.get("eff_ht_size",  4))
+        req.filters.halftone.angle_deg = float(s.get("eff_ht_angle", 45.0))
+
+    elif effect == "Matrix Rain":
+        req.filters.matrix_rain.enabled = True
+        req.filters.matrix_rain.density = float(s.get("eff_mx_density", 0.5))
+        req.filters.matrix_rain.speed   = float(s.get("eff_mx_speed",   0.5))
+
+    elif effect == "Dots":
+        req.ascii.mode = "dots"
+
+    elif effect == "Contour":
+        req.filters.contour.enabled   = True
+        req.filters.contour.levels    = int(s.get("eff_ct_levels", 5))
+        req.filters.contour.thickness = int(s.get("eff_ct_thick",  1))
+
+    elif effect == "Pixel Sort":
+        req.filters.pixel_sort.enabled         = True
+        req.filters.pixel_sort.threshold_low   = float(s.get("eff_ps_lo",  0.2))
+        req.filters.pixel_sort.threshold_high  = float(s.get("eff_ps_hi",  0.8))
+        req.filters.pixel_sort.direction       = s.get("eff_ps_dir", "horizontal")
+
+    elif effect == "Blockify":
+        req.filters.blockify.enabled    = True
+        req.filters.blockify.block_size = int(s.get("eff_bk_size", 8))
+
+    elif effect == "Threshold":
+        req.filters.threshold.enabled = True
+        req.filters.threshold.level   = int(s.get("eff_thr_level", 128))
+
+    elif effect == "Edge Detection":
+        req.filters.edge.enabled  = True
+        req.filters.edge.strength = float(s.get("eff_ed_str", 1.0))
+        req.filters.edge.low      = int(s.get("eff_ed_lo",   50))
+        req.filters.edge.high     = int(s.get("eff_ed_hi",  150))
+
+    elif effect == "Crosshatch":
+        req.filters.crosshatch.enabled   = True
+        req.filters.crosshatch.spacing   = int(s.get("eff_ch_spacing", 6))
+        req.filters.crosshatch.angle_deg = float(s.get("eff_ch_angle",  45.0))
+
+    elif effect == "Wave Lines":
+        req.filters.wave_lines.enabled   = True
+        req.filters.wave_lines.amplitude = float(s.get("eff_wl_amp",  5.0))
+        req.filters.wave_lines.frequency = float(s.get("eff_wl_freq", 0.05))
+
+    elif effect == "Noise Field":
+        req.filters.noise_field.enabled   = True
+        req.filters.noise_field.scale     = float(s.get("eff_nf_scale", 0.05))
+        req.filters.noise_field.intensity = float(s.get("eff_nf_int",   0.5))
+
+    elif effect == "Voronoi":
+        req.filters.voronoi.enabled      = True
+        req.filters.voronoi.num_cells    = int(s.get("eff_vo_cells",   50))
+        req.filters.voronoi.outline_only = bool(s.get("eff_vo_outline", False))
+
+    elif effect == "VHS":
+        req.filters.vhs.enabled      = True
+        req.filters.vhs.intensity    = float(s.get("eff_vhs_int",    0.5))
+        req.filters.vhs.scanlines    = float(s.get("eff_vhs_scan",   0.6))
+        req.filters.vhs.noise        = float(s.get("eff_vhs_noise",  0.25))
+        req.filters.vhs.chroma_shift = int(s.get("eff_vhs_chroma",   2))
+        req.filters.vhs.jitter       = float(s.get("eff_vhs_jitter", 0.15))
+    elif effect == "Pixel Art":
+        req.filters.pixel_art.enabled    = True
+        req.filters.pixel_art.block_size = int(s.get("eff_pa_size", s.get("eff_pa_block", 3)))
+        req.filters.pixel_art.palette    = s.get("eff_pa_palette", "Sora")
+        # Glitch = chromatic aberration + grain (matches offline behaviour)
+        if s.get("eff_pa_fx", "None") == "Glitch":
+            req.filters.chromatic.enabled = True
+            req.filters.chromatic.shift   = 8
+            req.filters.grain.enabled     = True
+            req.filters.grain.intensity   = 25.0
+
     req.validate()
     return req
 
@@ -383,9 +468,15 @@ class HostApp:
 
         elif t == "settings_update":
             if cid in self.sessions:
-                self.sessions[cid].settings = msg.get("payload", {})
-                if self.sessions[cid].media_bytes:
-                    self._schedule_processing(cid)
+                new_settings = msg.get("payload", {})
+                s = self.sessions[cid]
+                if s.processing:
+                    # Render in progress — buffer latest settings; re-render when done
+                    s.pending_settings = new_settings
+                else:
+                    s.settings = new_settings
+                    if s.media_bytes:
+                        self._schedule_processing(cid)
 
         elif t == "media_metadata":
             if cid in self.sessions:
@@ -499,14 +590,88 @@ class HostApp:
                 "payload": {"filename": s.media_filename, "total_frames": total},
             })
 
-            for i, frame in enumerate(frames):
+            # ── Effect classification ─────────────────────────────────────
+            RASTER_EFFECTS = {
+                "Halftone", "Matrix Rain", "Pixel Sort", "Blockify",
+                "Threshold", "Edge Detection", "Contour", "Crosshatch",
+                "Wave Lines", "Noise Field", "Voronoi", "VHS", "Pixel Art",
+            }
+            effect_name = s.settings.get("effect", "ASCII")
+            is_raster   = effect_name in RASTER_EFFECTS
+            pa_fx       = s.settings.get("eff_pa_fx", "None") if effect_name == "Pixel Art" else "None"
+
+            # ── Dialogue overlay settings ────────────────────────────────
+            dlg_enabled = bool(s.settings.get("dlg_enabled", False))
+            dlg_text    = s.settings.get("dlg_text",  "")
+            dlg_style   = s.settings.get("dlg_style", "terminal")
+            dlg_name    = s.settings.get("dlg_name",  "")
+            dlg_pos     = float(s.settings.get("dlg_pos", 1.0))
+
+            # ── Still-image shortcut: use convert_bytes (matches offline) ─
+            # Matrix Rain, Pixel Sort and other non-Pixel-Art effects on a
+            # single frame must go through the full ascii_engine pipeline.
+            if total == 1 and effect_name != "Pixel Art":
+                try:
+                    from ascii_engine.converter import convert_bytes as _cb
+                    _out = _cb(s.media_bytes, req)
+                    png  = _out.get("png")
+                    if png:
+                        png = self._apply_dlg_to_png(png, dlg_enabled, dlg_text,
+                                                     dlg_style, dlg_name, dlg_pos, 0, 1)
+                        self.root.after(0, self._update_preview, client_id, png)
+                        self.p2p.send({"type": "preview_frame", "room": self.room_code,
+                            "to_id": client_id, "payload": {"frame_index": 0,
+                            "png_b64": base64.b64encode(png).decode(), "is_final": True}})
+                        self.p2p.send({"type": "processing_progress", "room": self.room_code,
+                            "to_id": client_id, "payload": {"frame": 1, "total": 1, "percent": 100}})
+                        self.p2p.send({"type": "processing_done", "room": self.room_code,
+                            "to_id": client_id, "payload": {"frame_count": 1}})
+                        self.root.after(0, self._set_progress, client_id, "Done ✓")
+                        return
+                except Exception as _cb_err:
+                    print(f"[HostApp] convert_bytes failed, falling back: {_cb_err}")
+
+            # ── Pixel Art Cycle/Dither: synthesise animated frames ────────
+            # Pre-compute the base (pixelate + palette) ONCE, then apply
+            # PIL-level FX per step.  Store as pre-filtered PIL images so the
+            # main loop does NOT call apply_filters again (avoids double-pixelation).
+            pa_frames_pil = None   # list[PIL.Image] or None
+            if effect_name == "Pixel Art" and pa_fx in ("Cycle", "Dither") and total == 1:
+                from gui.gui_app import apply_pixel_art_fx, _CYCLE_VARIANTS
+                _base_filtered = apply_filters(frames[0], req.filters, seed=req.determinism.seed)
+                _base_pil      = Image.fromarray(_base_filtered)
+                _n             = len(_CYCLE_VARIANTS) if pa_fx == "Cycle" else 4
+                pa_frames_pil  = [apply_pixel_art_fx(_base_pil, pa_fx, step) for step in range(_n)]
+                total          = len(pa_frames_pil)
+
+            # ── Frame-by-frame render loop ────────────────────────────────
+            for i in range(total):
                 if client_id not in self.sessions:
                     break
 
-                filtered      = apply_filters(frame, req.filters, seed=req.determinism.seed + i)
-                lines, colors = image_to_ascii_lines_and_colors(filtered, req)
-                png           = render_png(lines, colors, req)
+                if pa_frames_pil is not None:
+                    # Already processed; just convert PIL → PNG
+                    _pil = pa_frames_pil[i]
+                    _bio = BytesIO()
+                    _pil.save(_bio, format="PNG")
+                    png = _bio.getvalue()
+                else:
+                    filtered = apply_filters(frames[i], req.filters,
+                                             seed=req.determinism.seed + i)
+                    if is_raster:
+                        _pil = Image.fromarray(filtered)
+                        if effect_name == "Pixel Art" and pa_fx not in ("", "None", "Glitch"):
+                            from gui.gui_app import apply_pixel_art_fx
+                            _pil = apply_pixel_art_fx(_pil, pa_fx, i)
+                        _bio = BytesIO()
+                        _pil.save(_bio, format="PNG")
+                        png = _bio.getvalue()
+                    else:
+                        lines, colors = image_to_ascii_lines_and_colors(filtered, req)
+                        png           = render_png(lines, colors, req)
 
+                png = self._apply_dlg_to_png(png, dlg_enabled, dlg_text,
+                                             dlg_style, dlg_name, dlg_pos, i, total)
                 self.root.after(0, self._update_preview, client_id, png)
 
                 self.p2p.send({
@@ -546,7 +711,14 @@ class HostApp:
                 except Exception:
                     pass
             if client_id in self.sessions:
-                self.sessions[client_id].processing = False
+                s_fin = self.sessions[client_id]
+                s_fin.processing = False
+                if s_fin.pending_settings:
+                    # Apply buffered settings and re-render immediately
+                    s_fin.settings = s_fin.pending_settings
+                    s_fin.pending_settings = {}
+                    if s_fin.media_bytes:
+                        self._schedule_processing(client_id)
 
     # ── TXT / HTML export for clients ────────────────────────────────────────────
 
@@ -561,7 +733,7 @@ class HostApp:
             from ascii_engine.converter import (
                 convert_bytes, decode_media_bytes,
                 image_to_ascii_lines_and_colors,
-                render_txt, render_html,
+                render_txt, render_html, render_png,
             )
             from ascii_engine.filters import apply_filters
 
@@ -598,14 +770,53 @@ class HostApp:
                 frames = decoded.frames_rgb
 
             # For TXT/HTML use only the first frame (multi-frame txt would be huge)
-            frame = frames[0]
-            filtered      = apply_filters(frame, req.filters, seed=req.determinism.seed)
-            lines, colors = image_to_ascii_lines_and_colors(filtered, req)
+            frame    = frames[0]
+            filtered = apply_filters(frame, req.filters, seed=req.determinism.seed)
 
-            if fmt == "txt":
-                data = render_txt(lines)
-            else:   # html
-                data = render_html(lines, colors, req)
+            effect_name_exp = settings.get("effect", "ASCII")
+            pa_fx_exp       = settings.get("eff_pa_fx", "None") if effect_name_exp == "Pixel Art" else "None"
+            RASTER_EFFECTS_EXP = {
+                "Halftone","Matrix Rain","Pixel Sort","Blockify","Threshold",
+                "Edge Detection","Contour","Crosshatch","Wave Lines","Noise Field",
+                "Voronoi","VHS","Pixel Art",
+            }
+
+            # Still-image non-Pixel-Art: go through full ascii_engine pipeline
+            if not self._is_video(s.media_filename) and len(frames) == 1 and effect_name_exp != "Pixel Art":
+                try:
+                    _out_exp = convert_bytes(s.media_bytes, req)
+                    data = _out_exp.get(fmt) or _out_exp.get("png") or b""
+                except Exception:
+                    data = b""
+            elif fmt in ("png", "jpeg") and effect_name_exp in RASTER_EFFECTS_EXP:
+                _pil_exp = Image.fromarray(filtered)
+                if effect_name_exp == "Pixel Art" and pa_fx_exp not in ("", "None", "Glitch"):
+                    from gui.gui_app import apply_pixel_art_fx
+                    _pil_exp = apply_pixel_art_fx(_pil_exp, pa_fx_exp, 0)
+                _bio_exp = BytesIO()
+                _pil_exp.save(_bio_exp, format="JPEG" if fmt == "jpeg" else "PNG",
+                              **{"quality": 95} if fmt == "jpeg" else {})
+                data = _bio_exp.getvalue()
+            else:
+                lines, colors = image_to_ascii_lines_and_colors(filtered, req)
+                if fmt == "txt":
+                    data = render_txt(lines)
+                elif fmt == "html":
+                    data = render_html(lines, colors, req)
+                else:
+                    data = render_png(lines, colors, req)
+
+            # Apply dialogue overlay to image exports
+            dlg_en_exp  = bool(settings.get("dlg_enabled", False))
+            dlg_txt_exp = settings.get("dlg_text", "")
+            if fmt in ("png", "jpeg") and dlg_en_exp and dlg_txt_exp and data:
+                data = self._apply_dlg_to_png(
+                    data, dlg_en_exp, dlg_txt_exp,
+                    settings.get("dlg_style", "terminal"),
+                    settings.get("dlg_name", ""),
+                    float(settings.get("dlg_pos", 1.0)),
+                    0, 1,
+                )
 
             # Send back in 48 KB chunks
             chunk_size = 48 * 1024
@@ -642,6 +853,39 @@ class HostApp:
                     pass
 
     # ── UI helpers ────────────────────────────────────────────────────────────
+
+
+    @staticmethod
+    def _apply_dlg_to_png(
+        png: bytes, enabled: bool, text: str, style: str,
+        name: str, pos: float, frame_idx: int, total_frames: int,
+    ) -> bytes:
+        """Apply dialogue overlay to a PNG frame. Returns original if disabled."""
+        if not enabled or not text:
+            return png
+        try:
+            import importlib as _il
+            _render_dlg = _txt_for_frame = None
+            for _mp in ("gui.dialogue_overlay", "dialogue_overlay"):
+                try:
+                    _m = _il.import_module(_mp)
+                    _render_dlg    = _m.render_dialogue
+                    _txt_for_frame = _m.dialogue_text_for_frame
+                    break
+                except ImportError:
+                    continue
+            if _render_dlg is None:
+                return png
+            frame_text = _txt_for_frame(text, frame_idx, total_frames)
+            img = Image.open(BytesIO(png)).convert("RGB")
+            img = _render_dlg(img, text=frame_text, style=style,
+                              char_name=name, position=pos)
+            bio = BytesIO()
+            img.save(bio, format="PNG")
+            return bio.getvalue()
+        except Exception as e:
+            print(f"[HostApp] dialogue overlay error: {e}")
+            return png
 
     def _update_preview(self, client_id: str, png: bytes):
         s = self.sessions.get(client_id)

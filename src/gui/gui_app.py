@@ -73,6 +73,123 @@ def _frames_to_gif_bytes(frames_rgb, fps: int) -> bytes:
     """Encode raw RGB frames to GIF bytes."""
     from media.video_handler import _frames_to_gif_bytes as _ftg  # type: ignore
     return _ftg(frames_rgb, fps)
+# Effects that render as raster images (NOT ASCII character grids).
+# Preview and export both take a different code path for these.
+RASTER_EFFECTS = {
+    "Halftone", "Matrix Rain", "Pixel Sort", "Blockify",
+    "Threshold", "Edge Detection", "Contour", "Crosshatch",
+    "Wave Lines", "Noise Field", "Voronoi", "VHS", "Pixel Art",
+}
+
+# ── Pixel Art FX engine ────────────────────────────────────────────────────────
+import numpy as np
+from PIL import Image as _PILfx
+
+_CYCLE_VARIANTS = [
+    (0,    1.0,  1.0),
+    (30,   1.2,  0.95),
+    (80,   1.3,  0.90),
+    (160,  1.1,  1.05),
+    (220,  0.9,  1.10),
+    (300,  1.2,  0.85),
+]
+
+_BAYER4 = (1.0 / 17.0) * np.array([
+    [ 1,  9,  3, 11],
+    [13,  5, 15,  7],
+    [ 4, 12,  2, 10],
+    [16,  8, 14,  6],
+], dtype=np.float32)
+
+
+def _pa_fx_crt(img):
+    """
+    CRT effect: darken every odd row 30% (scanline gap).
+    Subtle phosphor warmth on lit rows. No blur — pixel-sharp.
+    """
+    arr = np.array(img.convert("RGB"), dtype=np.float32)
+    arr[1::2] *= 0.70
+    arr[0::2, :, 0] = np.clip(arr[0::2, :, 0] * 1.03, 0, 255)  # slight red warmth
+    arr[0::2, :, 2] = np.clip(arr[0::2, :, 2] * 0.97, 0, 255)  # slight blue reduction
+    return _PILfx.fromarray(arr.clip(0, 255).astype(np.uint8), mode="RGB")
+
+
+def _pa_fx_cycle(img, step):
+    """
+    Palette cycle: discrete HSV shift per step variant.
+    Rotates through 6 stylised palette states — no new gradients,
+    pixel-art friendly. Structure stays identical; only colors change.
+    """
+    hue_shift, sat_scale, val_scale = _CYCLE_VARIANTS[step % len(_CYCLE_VARIANTS)]
+    if hue_shift == 0 and sat_scale == 1.0 and val_scale == 1.0:
+        return img
+    rgb = np.array(img.convert("RGB"), dtype=np.float32) / 255.0
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    cmax  = np.maximum(np.maximum(r, g), b)
+    cmin  = np.minimum(np.minimum(r, g), b)
+    delta = cmax - cmin
+    h = np.zeros_like(r)
+    mask = delta > 1e-6
+    m = mask & (cmax == r); h[m] = (60 * ((g[m] - b[m]) / delta[m])) % 360
+    m = mask & (cmax == g); h[m] =  60 *  (b[m] - r[m]) / delta[m] + 120
+    m = mask & (cmax == b); h[m] =  60 *  (r[m] - g[m]) / delta[m] + 240
+    s = np.where(cmax > 1e-6, delta / cmax, 0.0)
+    v = cmax
+    h = (h + hue_shift) % 360
+    s = np.clip(s * sat_scale, 0.0, 1.0)
+    v = np.clip(v * val_scale, 0.0, 1.0)
+    hi = (h / 60).astype(np.int32) % 6
+    f  = (h / 60) - np.floor(h / 60)
+    p, q, t2 = v * (1 - s), v * (1 - f * s), v * (1 - (1 - f) * s)
+    out = np.zeros_like(rgb)
+    for sec, (cr, cg, cb) in enumerate([
+        (v, t2, p), (q, v, p), (p, v, t2),
+        (p, q, v), (t2, p, v), (v, p, q),
+    ]):
+        m = hi == sec
+        out[m, 0] = cr[m]; out[m, 1] = cg[m]; out[m, 2] = cb[m]
+    return _PILfx.fromarray((out * 255).clip(0, 255).astype(np.uint8), mode="RGB")
+
+
+def _pa_fx_ghost(img):
+    """
+    Ghost effect: 40% desaturation, 18% brightness boost,
+    faint 3px offset duplicate at 25% opacity. Dreamlike, no blur.
+    """
+    arr  = np.array(img.convert("RGB"), dtype=np.float32)
+    gray = arr.mean(axis=2, keepdims=True)
+    arr  = arr * 0.60 + gray * 0.40
+    arr  = (arr * 1.18).clip(0, 255)
+    ghost = np.zeros_like(arr)
+    ghost[3:, 3:] = arr[:-3, :-3]
+    arr = (arr * 0.75 + ghost * 0.25).clip(0, 255)
+    return _PILfx.fromarray(arr.astype(np.uint8), mode="RGB")
+
+
+def _pa_fx_dither(img, step):
+    """
+    Animated Bayer 4x4 ordered dither.
+    Rolls matrix by step each frame for subtle shimmer.
+    Gentle ±20 overlay keeps original colors intact.
+    """
+    arr = np.array(img.convert("RGB"), dtype=np.float32)
+    h, w = arr.shape[:2]
+    bayer = np.roll(np.roll(_BAYER4, step, axis=0), step * 2, axis=1)
+    tiled = np.tile(bayer, (h // 4 + 1, w // 4 + 1))[:h, :w, np.newaxis]
+    return _PILfx.fromarray(
+        (arr + (tiled - 0.5) * 40.0).clip(0, 255).astype(np.uint8), mode="RGB"
+    )
+
+
+def apply_pixel_art_fx(pil_img, fx: str, step: int = 0):
+    """Dispatch named Pixel Art FX. Returns new PIL Image. Passthrough for None/Glitch."""
+    if fx == "CRT":    return _pa_fx_crt(pil_img)
+    if fx == "Cycle":  return _pa_fx_cycle(pil_img, step)
+    if fx == "Ghost":  return _pa_fx_ghost(pil_img)
+    if fx == "Dither": return _pa_fx_dither(pil_img, step % 4)
+    return pil_img
+
+
 
 
 # ── Color palette ──────────────────────────────────────────────────────────────
@@ -104,7 +221,7 @@ EFFECTS = [
     "ASCII", "Halftone", "Matrix Rain", "Dots",
     "Contour", "Pixel Sort", "Blockify", "Threshold",
     "Edge Detection", "Crosshatch", "Wave Lines", "Noise Field",
-    "Voronoi", "VHS",
+    "Voronoi", "VHS", "Pixel Art",
 ]
 
 EXPORT_FORMATS = [
@@ -263,6 +380,163 @@ class DarkDropdown(tk.Frame):
         return self.var.get()
 
 
+
+class ButtonPicker(tk.Frame):
+    """Compact button-grid picker — replaces Combobox dropdowns."""
+    def __init__(self, parent, label, options, default=None, callback=None,
+                 cols=3, **kwargs):
+        super().__init__(parent, bg=C["panel"], **kwargs)
+        self.callback = callback
+        self.options_list = options
+        self.var = tk.StringVar(value=default or (options[0] if options else ""))
+        if label:
+            tk.Label(self, text=label, bg=C["panel"], fg=C["text_dim"],
+                     font=FONT_MONO_S, anchor="w").pack(fill="x", pady=(0, 2))
+        grid = tk.Frame(self, bg=C["panel"])
+        grid.pack(fill="x")
+        for col in range(cols):
+            grid.columnconfigure(col, weight=1)
+        self._btns: dict = {}
+        for i, opt in enumerate(options):
+            r, c = divmod(i, cols)
+            btn = tk.Button(grid, text=opt, relief="flat", bd=0,
+                            font=("Segoe UI", 10), padx=4, pady=5,
+                            cursor="hand2", anchor="center",
+                            command=lambda o=opt: self._pick(o))
+            btn.grid(row=r, column=c, padx=2, pady=2, sticky="nsew")
+            self._btns[opt] = btn
+        self._refresh()
+
+    def _pick(self, opt):
+        self.var.set(opt)
+        self._refresh()
+        if self.callback:
+            self.callback(opt)
+
+    def _refresh(self):
+        sel = self.var.get()
+        for opt, btn in self._btns.items():
+            btn.config(bg=C["accent"] if opt == sel else C["active2"],
+                       fg="#ffffff" if opt == sel else C["text_dim"])
+
+    def get(self):
+        return self.var.get()
+
+    def set(self, v):
+        if v in self._btns:
+            self.var.set(v)
+            self._refresh()
+
+
+class PalettePicker(tk.Frame):
+    """
+    Visual 2-column palette picker with real colour swatches from PALETTES dict.
+    Includes the correct "Sora" palette (blue/navy theme used as default).
+    """
+    # Correct hex swatches matching palettes.py RGB values exactly
+    _SWATCHES = {
+        "none":        [],
+        "Sora":        ["#1d2b53","#29366f","#3d5ea3","#6b8dbd","#c8d8f0","#e8eef8","#7ec8e3","#0099cc"],
+        "Game Boy":    ["#0f380f","#306230","#8bac0f","#9bbc0f"],
+        "NES":         ["#000000","#fcfcfc","#f80000","#00f800","#0000f8","#f8f800","#f800f8","#00f8f8"],
+        "CGA":         ["#000000","#00aaaa","#aa00aa","#aaaaaa","#555555","#55ffff","#ff55ff","#ffffff"],
+        "C64":         ["#000000","#ffffff","#880000","#aaffee","#cc44cc","#00cc55","#0000aa","#eeee77"],
+        "PICO-8":      ["#000000","#1d2b53","#7e2553","#008751","#ab5236","#5f574f","#c2c3c7","#fff1e8"],
+        "Sweetie 16":  ["#1a1c2c","#5d274d","#b13e53","#ef7d57","#ffcd75","#a7f070","#38b764","#257179"],
+        "Pastel":      ["#ffb3ba","#ffdfba","#ffffba","#baffc9","#bae1ff","#dab4ff","#ffbaef","#ffffff"],
+        "Mono":        ["#000000","#202020","#404040","#606060","#808080","#a0a0a0","#c0c0c0","#e0e0e0"],
+        "Sepia":       ["#140a00","#462800","#785028","#a05046","#c87864","#e6c38c","#f5dcb4","#fff5dc"],
+        "Sunset":      ["#0f001e","#500000","#b41432","#f0501e","#ff8c00","#ffd23c","#fff0b4","#ffffe6"],
+        "Ocean":       ["#000a28","#001e50","#004682","#0078b4","#1eaad2","#64d2e6","#b4f0fa","#e6faff"],
+        "Earth":       ["#140a05","#3c1e0f","#643c1e","#8c6432","#aa8246","#c8aa64","#dcc88c","#f0e6be"],
+        "Sakura":      ["#1e0a14","#64001e","#b4506e","#e68ca0","#f5bec8","#ffdce1","#fff0f5","#fffafc"],
+        "Cyber":       ["#000000","#00ffc8","#ff0064","#0064ff","#b400ff","#ffdc00","#141428","#ffffff"],
+        "Horror":      ["#000000","#1e0000","#500000","#8c1414","#b4321e","#d2643c","#f0aa78","#ffe6c8"],
+    }
+
+    def __init__(self, parent, default="Sora", callback=None, **kwargs):
+        super().__init__(parent, bg=C["panel"], **kwargs)
+        self.callback = callback
+        self.var = tk.StringVar(value=default)
+        self._cells: dict = {}
+
+        try:
+            from ascii_engine.palettes import PALETTES  # type: ignore
+            palette_data = PALETTES
+        except Exception:
+            palette_data = {k: [] for k in self._SWATCHES}
+
+        names = list(self._SWATCHES.keys())
+
+        grid = tk.Frame(self, bg=C["panel"])
+        grid.pack(fill="x")
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1)
+
+        for i, name in enumerate(names):
+            if name not in palette_data and name != "none":
+                continue
+            row_i, col_i = divmod(i, 2)
+            colors = self._SWATCHES.get(name, [])
+
+            cell = tk.Frame(grid, bg=C["active2"], cursor="hand2",
+                            highlightthickness=1, highlightbackground=C["border2"])
+            cell.grid(row=row_i, column=col_i, padx=2, pady=2, sticky="nsew")
+
+            srow = tk.Frame(cell, bg=C["active2"])
+            srow.pack(fill="x", padx=3, pady=(4, 1))
+
+            if colors:
+                for hx in colors[:8]:
+                    try:
+                        sw = tk.Frame(srow, bg=hx, width=10, height=10)
+                        sw.pack(side="left", padx=1)
+                        sw.pack_propagate(False)
+                        sw.bind("<Button-1>", lambda e, n=name: self._pick(n))
+                    except Exception:
+                        pass
+            else:
+                tk.Label(srow, text="—", bg=C["active2"],
+                         fg=C["text_dim"], font=("Segoe UI", 8)).pack(side="left")
+
+            lbl = tk.Label(cell, text=name, bg=C["active2"], fg=C["text"],
+                           font=("Segoe UI", 10), anchor="w", padx=4, pady=2)
+            lbl.pack(fill="x")
+            self._cells[name] = (cell, lbl)
+
+            def _bind(n=name):
+                h = lambda e=None: self._pick(n)
+                cell.bind("<Button-1>", h)
+                lbl.bind("<Button-1>", h)
+            _bind()
+
+        self._refresh()
+
+    def _pick(self, name):
+        self.var.set(name)
+        self._refresh()
+        if self.callback:
+            self.callback(name)
+
+    def _refresh(self):
+        sel = self.var.get()
+        for name, (cell, lbl) in self._cells.items():
+            if name == sel:
+                cell.config(bg=C["accent2"], highlightbackground=C["accent"])
+                lbl.config(bg=C["accent2"], fg="#ffffff")
+            else:
+                cell.config(bg=C["active2"], highlightbackground=C["border2"])
+                lbl.config(bg=C["active2"], fg=C["text"])
+
+    def get(self):
+        return self.var.get()
+
+    def set(self, v):
+        if v in self._cells:
+            self.var.set(v)
+            self._refresh()
+
+
 class SectionHeader(tk.Frame):
     """Collapsible section header."""
     def __init__(self, parent, title, collapsed=False, **kwargs):
@@ -399,10 +673,12 @@ class SettingsPanel(tk.Frame):
                                          callback=self.app.schedule_preview)
         self.ascii_width.pack(fill="x", padx=18, pady=2)
 
-        self.ascii_charset = DarkDropdown(p, "Character Set",
-                                          ["STANDARD", "DENSE", "BLOCKS4", "BLOCKS8", "DOTS"],
-                                          callback=self.app.schedule_preview)
-        self.ascii_charset.pack(fill="x", padx=18, pady=3)
+        tk.Label(p, text="Character Set", bg=C["panel"], fg=C["text_dim"],
+                 font=FONT_MONO_S, anchor="w", padx=18).pack(fill="x", pady=(4, 0))
+        self.ascii_charset = ButtonPicker(
+            p, "", ["STANDARD", "DENSE", "BLOCKS4", "BLOCKS8", "DOTS"],
+            default="STANDARD", cols=3, callback=self.app.schedule_preview)
+        self.ascii_charset.pack(fill="x", padx=18, pady=(2, 4))
         self._divider()
 
     # ── Adjustments ───────────────────────────────────────────
@@ -440,17 +716,13 @@ class SettingsPanel(tk.Frame):
         self._section_label("Color")
         p = self._inner
 
-        row = tk.Frame(p, bg=C["panel"])
-        row.pack(fill="x", padx=18, pady=3)
-        tk.Label(row, text="Mode", bg=C["panel"], fg=C["text_dim"],
-                 font=FONT_MONO_S, width=16, anchor="w").pack(side="left")
-        self.color_mode = ttk.Combobox(row,
-                                        values=["Original", "Grayscale", "Sepia", "Invert"],
-                                        state="readonly", width=18, font=("Segoe UI", 13),
-                                        style="Dark.TCombobox")
-        self.color_mode.set("Original")
-        self.color_mode.pack(side="left", padx=4)
-        self.color_mode.bind("<<ComboboxSelected>>", lambda e: self.app.schedule_preview())
+        tk.Label(p, text="Color Mode", bg=C["panel"], fg=C["text_dim"],
+                 font=FONT_MONO_S, anchor="w", padx=18).pack(fill="x", pady=(4, 0))
+        self.color_mode = ButtonPicker(
+            p, "", ["Original", "Grayscale", "Sepia", "Invert"],
+            default="Original", cols=2,
+            callback=lambda v: self.app.schedule_preview())
+        self.color_mode.pack(fill="x", padx=18, pady=(2, 4))
 
         bg_row = tk.Frame(p, bg=C["panel"])
         bg_row.pack(fill="x", padx=18, pady=3)
@@ -612,6 +884,74 @@ class SettingsPanel(tk.Frame):
         self.crt_en = DarkCheck(p, "CRT Curve", callback=self.app.schedule_preview)
         self.crt_en.pack(fill="x", padx=18, pady=2)
         self._divider()
+
+        # ── Dialogue Box ───────────────────────────────────────────────────────
+        self._build_dialogue_section()
+
+    def _build_dialogue_section(self):
+        """Dialogue overlay section — positioned below post-processing."""
+        self._section_label("Dialogue Box")
+        p = self._inner
+
+        # Enable toggle row
+        dlg_hdr = tk.Frame(p, bg=C["panel"])
+        dlg_hdr.pack(fill="x", padx=8, pady=(0, 4))
+        self.dlg_enabled = DarkCheck(dlg_hdr, "Enable Dialogue",
+                                     callback=lambda v: self._on_dlg_change())
+        self.dlg_enabled.pack(side="left")
+
+        # Style buttons
+        self._dlg_style_var = tk.StringVar(value="terminal")
+        tk.Label(p, text="Style", bg=C["panel"], fg=C["text_dim"],
+                 font=FONT_MONO_S, anchor="w", padx=18).pack(fill="x", pady=(0, 2))
+        self._dlg_style_picker = ButtonPicker(
+            p, "", ["terminal", "minimal", "rpg_blue", "rpg_brown"],
+            default="terminal", cols=2,
+            callback=lambda v: (self._dlg_style_var.set(v), self._on_dlg_change()))
+        self._dlg_style_picker.pack(fill="x", padx=18, pady=(0, 6))
+
+        # Speaker name
+        name_row = tk.Frame(p, bg=C["panel"])
+        name_row.pack(fill="x", padx=18, pady=(0, 4))
+        tk.Label(name_row, text="Speaker name", bg=C["panel"], fg=C["text_dim"],
+                 font=FONT_MONO_S, width=16, anchor="w").pack(side="left")
+        self._dlg_name_var = tk.StringVar()
+        tk.Entry(name_row, textvariable=self._dlg_name_var,
+                 bg=C["active2"], fg=C["text_bright"],
+                 insertbackground=C["accent"],
+                 font=FONT_MONO_S, width=18, relief="flat",
+                 highlightthickness=1, highlightbackground=C["border2"],
+                 highlightcolor=C["accent"]).pack(side="left", padx=(4, 0))
+        self._dlg_name_var.trace_add("write", lambda *_: self._on_dlg_change())
+
+        # Dialogue text
+        tk.Label(p, text="Dialogue text", bg=C["panel"], fg=C["text_dim"],
+                 font=FONT_MONO_S, anchor="w", padx=18).pack(fill="x", pady=(4, 0))
+        self._dlg_text_var = tk.StringVar()
+        tk.Entry(p, textvariable=self._dlg_text_var,
+                 bg=C["active2"], fg=C["text_bright"],
+                 insertbackground=C["accent"],
+                 font=FONT_MONO_S, relief="flat",
+                 highlightthickness=1, highlightbackground=C["border2"],
+                 highlightcolor=C["accent"]).pack(fill="x", padx=18, pady=(2, 4))
+        self._dlg_text_var.trace_add("write", lambda *_: self._on_dlg_change())
+
+        # Position slider
+        self.dlg_pos = DarkSlider(p, "Position", 0.0, 1.0, 1.0, resolution=0.01,
+                                  callback=lambda v: self._on_dlg_change(),
+                                  fmt="{:.2f}")
+        self.dlg_pos.pack(fill="x", padx=18, pady=(0, 4))
+
+        self._divider()
+
+    def _on_dlg_change(self):
+        """Push dialogue state to the App and trigger a preview refresh."""
+        self.app._dlg_enabled = self.dlg_enabled.get()
+        self.app._dlg_style   = self._dlg_style_var.get()
+        self.app._dlg_name    = self._dlg_name_var.get()
+        self.app._dlg_text    = self._dlg_text_var.get()
+        self.app._dlg_pos     = self.dlg_pos.get()
+        self.app.schedule_preview()
 
     # ── Export section ─────────────────────────────────────────
     def _build_export_section(self):
@@ -829,6 +1169,40 @@ class SettingsPanel(tk.Frame):
             "vignette_enabled":   self.vignette_en.get(),
             "vignette_intensity": self.vignette_int.get(),
             "crt_enabled":        self.crt_en.get(),
+            # Effect-specific params (read via hasattr so they only appear when the effect is active)
+            "eff_ht_size":        int(self._eff_ht_size.get())       if hasattr(self, "_eff_ht_size")       else 4,
+            "eff_ht_angle":       float(self._eff_ht_angle.get())    if hasattr(self, "_eff_ht_angle")      else 45.0,
+            "eff_mx_density":     float(self._eff_mx_density.get())  if hasattr(self, "_eff_mx_density")    else 0.5,
+            "eff_mx_speed":       float(self._eff_mx_speed.get())    if hasattr(self, "_eff_mx_speed")      else 0.5,
+            "eff_ct_levels":      int(self._eff_ct_levels.get())     if hasattr(self, "_eff_ct_levels")     else 5,
+            "eff_ct_thick":       int(self._eff_ct_thick.get())      if hasattr(self, "_eff_ct_thick")      else 1,
+            "eff_ps_lo":          float(self._eff_ps_lo.get())       if hasattr(self, "_eff_ps_lo")         else 0.2,
+            "eff_ps_hi":          float(self._eff_ps_hi.get())       if hasattr(self, "_eff_ps_hi")         else 0.8,
+            "eff_ps_dir":         self._eff_ps_dir.get()             if hasattr(self, "_eff_ps_dir")        else "horizontal",
+            "eff_bk_size":        int(self._eff_bk_size.get())       if hasattr(self, "_eff_bk_size")       else 8,
+            "eff_thr_level":      int(self._eff_thr_level.get())     if hasattr(self, "_eff_thr_level")     else 128,
+            "eff_ed_str":         float(self._eff_ed_str.get())      if hasattr(self, "_eff_ed_str")        else 1.0,
+            "eff_ed_lo":          int(self._eff_ed_lo.get())         if hasattr(self, "_eff_ed_lo")         else 50,
+            "eff_ed_hi":          int(self._eff_ed_hi.get())         if hasattr(self, "_eff_ed_hi")         else 150,
+            "eff_ch_spacing":     int(self._eff_ch_spacing.get())    if hasattr(self, "_eff_ch_spacing")    else 6,
+            "eff_ch_angle":       float(self._eff_ch_angle.get())    if hasattr(self, "_eff_ch_angle")      else 45.0,
+            "eff_wl_amp":         float(self._eff_wl_amp.get())      if hasattr(self, "_eff_wl_amp")        else 5.0,
+            "eff_wl_freq":        float(self._eff_wl_freq.get())     if hasattr(self, "_eff_wl_freq")       else 0.05,
+            "eff_nf_scale":       float(self._eff_nf_scale.get())    if hasattr(self, "_eff_nf_scale")      else 0.05,
+            "eff_nf_int":         float(self._eff_nf_int.get())      if hasattr(self, "_eff_nf_int")        else 0.5,
+            "eff_vo_cells":       int(self._eff_vo_cells.get())      if hasattr(self, "_eff_vo_cells")      else 50,
+            "eff_vo_outline":     bool(self._eff_vo_outline.get())   if hasattr(self, "_eff_vo_outline")    else False,
+            "eff_vhs_int":        float(self._eff_vhs_int.get())     if hasattr(self, "_eff_vhs_int")       else 0.5,
+            "eff_vhs_scan":       float(self._eff_vhs_scan.get())    if hasattr(self, "_eff_vhs_scan")      else 0.6,
+            "eff_vhs_noise":      float(self._eff_vhs_noise.get())   if hasattr(self, "_eff_vhs_noise")     else 0.25,
+            "eff_vhs_chroma":     int(self._eff_vhs_chroma.get())    if hasattr(self, "_eff_vhs_chroma")    else 2,
+            "eff_vhs_jitter":     float(self._eff_vhs_jitter.get())  if hasattr(self, "_eff_vhs_jitter")    else 0.15,
+            "eff_preprocess":     self._eff_preprocess.get()         if hasattr(self, "_eff_preprocess")    else "edges_threshold",
+            "eff_invert_ascii":   bool(self._eff_invert_ascii.get()) if hasattr(self, "_eff_invert_ascii")  else False,
+            # Pixel Art
+            "eff_pa_size":        int(self._eff_pa_size.get())       if hasattr(self, "_eff_pa_size")       else 3,
+            "eff_pa_palette":     self._eff_pa_palette.get()         if hasattr(self, "_eff_pa_palette")    else "Sora",
+            "eff_pa_fx":          self._eff_pa_fx.get()              if hasattr(self, "_eff_pa_fx")         else "None",
         }
 
 
@@ -1236,6 +1610,31 @@ def _build_effect_widgets(parent: tk.Frame, effect: str,
         app._eff_vhs_chroma = _int_slider("Chroma Shift", 0, 10, 2)
         app._eff_vhs_jitter = _slider("Jitter", 0, 1, 0.15)
 
+    elif effect == "Pixel Art":
+        _lbl("SIZE")
+        app._eff_pa_size = _int_slider("Block Size", 2, 32, 3)
+
+        _lbl("FX")
+        app._eff_pa_fx = ButtonPicker(
+            p, "", ["Glitch", "CRT", "Cycle", "Ghost", "Dither", "None"],
+            default="None", cols=3,
+            callback=lambda v: (
+                app._stop_cycle_anim(),
+                setattr(app, "_frames_rgb", []),
+                setattr(app, "_frame_delays_ms", []),
+                app._maybe_start_cycle_anim() if v in ("Cycle", "Dither") else None,
+                app.schedule_preview(),
+            ))
+        app._eff_pa_fx.pack(fill="x", padx=18, pady=(0, 6))
+        widgets.append(app._eff_pa_fx)
+
+        _lbl("PALETTE")
+        app._eff_pa_palette = PalettePicker(
+            p, default="Sora",
+            callback=lambda v: app.schedule_preview())
+        app._eff_pa_palette.pack(fill="x", padx=18, pady=(0, 6))
+        widgets.append(app._eff_pa_palette)
+
     return widgets
 
 
@@ -1265,10 +1664,26 @@ class App:
         self._vhs_anim_job: Optional[str] = None # VHS animation loop
         self._vhs_frame_seed: int = 0            # animated seed for VHS
         self._vhs_rendering: bool = False        # guard: don't stack VHS renders
+        # Pixel Art Cycle FX animation
+        self._pa_cycle_job: Optional[str] = None
+        self._pa_cycle_step: int = 0
         # Legacy aliases kept for compatibility
         self._gif_anim_job: Optional[str] = None
         self._gif_anim_frame: int = 0
         self._gif_frame_count: int = 1
+
+        # ── Render generation counter ──────────────────────────────────────────
+        # Incremented on every schedule_preview() call. Each render thread
+        # captures the generation at spawn time and aborts if it changes,
+        # preventing stale frames from mixed settings reaching the canvas.
+        self._render_gen: int = 0
+
+        # ── Dialogue overlay state ─────────────────────────────────────────────
+        self._dlg_enabled: bool = False
+        self._dlg_style:   str  = "terminal"
+        self._dlg_name:    str  = ""
+        self._dlg_text:    str  = ""
+        self._dlg_pos:     float = 1.0
 
         # Pre-initialize to None so callbacks during layout construction are safe
         self.canvas = None
@@ -1400,9 +1815,14 @@ class App:
 
     # ── Preview pipeline ───────────────────────────────────────
     def schedule_preview(self, _=None):
-        """Debounce: cancel pending preview and schedule a new one."""
+        """Debounce + cancel in-flight renders via generation counter."""
         if self.canvas is None or self.settings is None:
             return
+        # Bump generation: every render thread captures the gen at spawn time
+        # and aborts as soon as it sees a mismatch.  This prevents stale frames
+        # from a superseded settings state from ever reaching the canvas.
+        self._render_gen += 1
+        self._stop_anim()
         if self._preview_job:
             self.root.after_cancel(self._preview_job)
         self._preview_job = self.root.after(
@@ -1440,6 +1860,7 @@ class App:
                     self._is_video = False
                     info = f"  {self._file_name}  [{len(frames)}f @ {req.output.gif.fps_out}fps  {used_s:.1f}s]"
                     self.root.after(0, self.statusbar.set_message, info, C["text"])
+
                 elif self._file_data:
                     # Decode image or GIF into frames
                     from ascii_engine.converter import decode_media_bytes
@@ -1448,6 +1869,7 @@ class App:
                     decoded = decode_media_bytes(self._file_data, filename=self._file_name, bg_rgb=_bg)
                     self._frames_rgb = decoded.frames_rgb
                     self._frames_fps = float(decoded.src_fps or 12.0)
+
                     # Try to read actual GIF frame delays
                     if decoded.kind == "gif":
                         try:
@@ -1469,16 +1891,71 @@ class App:
             # ── Step 2: Render first frame and launch animation if multi-frame ─
             from ascii_engine.filters import apply_filters
             from ascii_engine.converter import image_to_ascii_lines_and_colors, render_png
+            from PIL import Image as _PILImg
+            import numpy as _np_pw
 
+            effect = self.sidebar.get_selected_effect() if self.sidebar else "ASCII"
+            is_raster = effect in RASTER_EFFECTS
+
+            # ✅ FIX: if it's a STILL IMAGE (not GIF/video), preview must match export
+            # Use convert_bytes for everything EXCEPT Pixel Art.
+            if len(self._frames_rgb) == 1 and effect != "Pixel Art":
+                try:
+                    from ascii_engine.converter import convert_bytes
+                    out = convert_bytes(self._file_data, req)  # req already has formats=["png"]
+                    png0 = out.get("png")
+                    if png0:
+                        png0 = self._maybe_apply_dialogue(png0)
+                        self.root.after(0, self._show_preview, png0)
+                        return
+                except Exception:
+                    # If convert_bytes fails, fallback to the old preview pipeline below.
+                    pass
+
+            # 2a: Pixel Art Cycle/Dither on still → synthesise animated frames
+            _pa_fx = ""
+            if effect == "Pixel Art" and hasattr(self, "_eff_pa_fx"):
+                _pa_fx = self._eff_pa_fx.get()
+
+            if effect == "Pixel Art" and _pa_fx in ("Cycle", "Dither") and len(self._frames_rgb) == 1:
+                _base_arr = apply_filters(self._frames_rgb[0], req.filters, seed=req.determinism.seed)
+                _base_pil = _PILImg.fromarray(_base_arr)
+                _n = len(_CYCLE_VARIANTS) if _pa_fx == "Cycle" else 4
+                synth = [
+                    _np_pw.array(apply_pixel_art_fx(_base_pil, _pa_fx, s), dtype=_np_pw.uint8)
+                    for s in range(_n)
+                ]
+                self._frames_rgb = synth
+                self._frame_delays_ms = [220] * _n
+                _b0 = BytesIO()
+                _PILImg.fromarray(synth[0]).save(_b0, format="PNG")
+                self.root.after(0, self._show_preview, _b0.getvalue())
+                self.root.after(0, self._start_anim_preview)
+                return
+
+            # 2b: Normal render (GIF/video or fallback)
             rgb0 = self._frames_rgb[0]
             filtered0 = apply_filters(rgb0, req.filters, seed=req.determinism.seed)
-            lines0, colors0 = image_to_ascii_lines_and_colors(filtered0, req)
-            png0 = render_png(lines0, colors0, req)
+
+            if not is_raster:
+                # ASCII-family render (ASCII, Dots, etc.)
+                lines0, colors0 = image_to_ascii_lines_and_colors(filtered0, req)
+                png0 = render_png(lines0, colors0, req)
+            else:
+                # Raster render — show filtered pixels directly
+                _pil0 = _PILImg.fromarray(filtered0)
+                # Apply Pixel Art PIL-level FX if active
+                if effect == "Pixel Art" and _pa_fx not in ("", "None", "Glitch"):
+                    _pil0 = apply_pixel_art_fx(_pil0, _pa_fx, getattr(self, "_pa_cycle_step", 0))
+                _bio = BytesIO()
+                _pil0.save(_bio, format="PNG")
+                png0 = _bio.getvalue()
 
             if len(self._frames_rgb) > 1:
                 self.root.after(0, self._show_preview, png0)
                 self.root.after(0, self._start_anim_preview)
             else:
+                png0 = self._maybe_apply_dialogue(png0)
                 self.root.after(0, self._show_preview, png0)
 
         except Exception as e:
@@ -1492,7 +1969,10 @@ class App:
         self._advance_anim_frame()
 
     def _advance_anim_frame(self):
-        """Render next frame from cached _frames_rgb and schedule the next tick."""
+        """Render next frame from cached _frames_rgb and schedule the next tick.
+
+        Uses _render_gen to abort stale renders when settings change mid-animation.
+        """
         if not self._frames_rgb or self.canvas is None:
             return
         if self._anim_rendering:
@@ -1500,19 +1980,23 @@ class App:
             self._anim_job = self.root.after(20, self._advance_anim_frame)
             return
 
-        frame_idx = self._anim_frame % len(self._frames_rgb)
-        delay_ms = self._frame_delays_ms[frame_idx] if self._frame_delays_ms else 83
+        frame_idx  = self._anim_frame % len(self._frames_rgb)
+        delay_ms   = self._frame_delays_ms[frame_idx] if self._frame_delays_ms else 83
         self._anim_frame = frame_idx + 1
-
         self._anim_rendering = True
+        gen = self._render_gen      # capture generation at thread-spawn time
 
-        def _render(idx=frame_idx):
+        def _render(idx=frame_idx, g=gen):
             try:
+                # ── Abort immediately if settings changed ─────────────────────
+                if g != self._render_gen:
+                    return
+
                 from ascii_engine.filters import apply_filters
                 from ascii_engine.converter import image_to_ascii_lines_and_colors, render_png
                 req = self.settings.build_request()
                 req = self._apply_effect_params(req)
-                req.filename = self._file_name
+                req.filename  = self._file_name
                 req.output.formats = ["png"]
                 # Advance VHS seed each frame so noise/jitter animates
                 if hasattr(self, "_vhs_frame_seed"):
@@ -1520,21 +2004,45 @@ class App:
                     req.determinism.seed = self._vhs_frame_seed
                 req.validate()
 
+                # ── Abort after the (potentially slow) build_request ──────────
+                if g != self._render_gen:
+                    return
+
                 effect = self.sidebar.get_selected_effect() if self.sidebar else "ASCII"
-                rgb = self._frames_rgb[idx]
+                rgb    = self._frames_rgb[idx]
                 filtered = apply_filters(rgb, req.filters, seed=req.determinism.seed)
 
-                if effect == "ASCII":
-                    # Render true ASCII art per frame
+                # ── Abort after the heavy filter step ─────────────────────────
+                if g != self._render_gen:
+                    return
+
+                if effect not in RASTER_EFFECTS:
+                    # ASCII-family render
                     lines, colors = image_to_ascii_lines_and_colors(filtered, req)
                     png_bytes = render_png(lines, colors, req)
-                    self.root.after(0, self._show_preview, png_bytes)
                 else:
-                    # Fast raster preview for all other effects (incl. VHS)
                     from PIL import Image as _Image
+                    _pil_a = _Image.fromarray(filtered)
+                    # Apply Pixel Art PIL-level FX if active
+                    if effect == "Pixel Art" and hasattr(self, "_eff_pa_fx"):
+                        _fx_a = self._eff_pa_fx.get()
+                        if _fx_a not in ("", "None", "Glitch"):
+                            _pil_a = apply_pixel_art_fx(_pil_a, _fx_a,
+                                                        getattr(self, "_pa_cycle_step", 0))
                     bio = BytesIO()
-                    _Image.fromarray(filtered).save(bio, format="PNG")
-                    self.root.after(0, self._show_preview, bio.getvalue())
+                    _pil_a.save(bio, format="PNG")
+                    png_bytes = bio.getvalue()
+
+                # Apply dialogue overlay if enabled
+                png_bytes = self._maybe_apply_dialogue(
+                    png_bytes,
+                    frame_idx=idx,
+                    total_frames=len(self._frames_rgb),
+                )
+
+                # Only push to canvas if still the current generation
+                if g == self._render_gen:
+                    self.root.after(0, self._show_preview, png_bytes)
             except Exception:
                 pass
             finally:
@@ -1553,6 +2061,65 @@ class App:
             self.root.after_cancel(self._anim_job)
             self._anim_job = None
         self._anim_rendering = False
+
+    # ── Dialogue helpers ───────────────────────────────────────
+    def _maybe_apply_dialogue(
+        self,
+        png_bytes: bytes,
+        *,
+        frame_idx: int = 0,
+        total_frames: int = 1,
+    ) -> bytes:
+        """Apply dialogue overlay to PNG bytes if dialogue is enabled.
+
+        For animated inputs, the text is revealed progressively across frames
+        (typewriter effect). Returns the original bytes unchanged if disabled.
+        """
+        if not self._dlg_enabled:
+            return png_bytes
+        text = self._dlg_text
+        if not text:
+            return png_bytes
+        try:
+            # Robust import: try module path, then direct file load
+            _render_dlg = None
+            _txt_for_frame = None
+            import importlib as _il_dlg
+            for _mp in ("gui.dialogue_overlay", "dialogue_overlay"):
+                try:
+                    _m = _il_dlg.import_module(_mp)
+                    _render_dlg = _m.render_dialogue
+                    _txt_for_frame = _m.dialogue_text_for_frame
+                    break
+                except ImportError:
+                    continue
+            if _render_dlg is None:
+                import importlib.util as _ilu
+                _here_d = Path(__file__).resolve().parent
+                for _cand in [_here_d / "dialogue_overlay.py",
+                               _here_d.parent / "gui" / "dialogue_overlay.py"]:
+                    if _cand.exists():
+                        _sp = _ilu.spec_from_file_location("dialogue_overlay", _cand)
+                        _md = _ilu.module_from_spec(_sp)
+                        _sp.loader.exec_module(_md)
+                        _render_dlg = _md.render_dialogue
+                        _txt_for_frame = _md.dialogue_text_for_frame
+                        break
+            if _render_dlg is None:
+                print("[Dialogue] dialogue_overlay.py not found — dialogue disabled")
+                return png_bytes
+            from PIL import Image as _PILImage
+            frame_text = _txt_for_frame(text, frame_idx, total_frames)
+            img = _PILImage.open(BytesIO(png_bytes)).convert("RGB")
+            img = _render_dlg(img, text=frame_text, style=self._dlg_style,
+                              char_name=self._dlg_name, position=self._dlg_pos)
+            bio = BytesIO()
+            img.save(bio, format="PNG")
+            return bio.getvalue()
+        except Exception as e:
+            print(f"[Dialogue] overlay error: {e}")
+            import traceback; traceback.print_exc()
+            return png_bytes
 
     def _show_preview(self, png: bytes):
         if self.canvas is None:
@@ -1678,6 +2245,20 @@ class App:
             # Use animated seed so noise/jitter changes frame-by-frame
             req.determinism.seed = getattr(self, "_vhs_frame_seed", 0)
 
+        elif effect == "Pixel Art":
+            req.filters.pixel_art.enabled = True
+            if hasattr(self, "_eff_pa_size"):
+                req.filters.pixel_art.block_size = int(self._eff_pa_size.get())
+            if hasattr(self, "_eff_pa_palette"):
+                req.filters.pixel_art.palette = self._eff_pa_palette.get()
+            # CRT/Cycle/Ghost/Dither are applied at PIL level (apply_pixel_art_fx).
+            # Only Glitch still routes through the filters engine.
+            if hasattr(self, "_eff_pa_fx") and self._eff_pa_fx.get() == "Glitch":
+                req.filters.chromatic.enabled = True
+                req.filters.chromatic.shift = 8
+                req.filters.grain.enabled = True
+                req.filters.grain.intensity = 25.0
+
         return req
 
     # ── Effect selection ───────────────────────────────────────
@@ -1687,11 +2268,32 @@ class App:
         self.canvas.set_effect(name)
         self.settings.set_effect_title(name)
         self._rebuild_effect_section(name)
-
-        # ✅ All effects (including VHS) go through the unified animation loop.
-        # _advance_anim_frame() picks render mode (ASCII vs raster) based on selected effect.
-        # No special VHS-only loop needed — it just animates frame seeds inside _render().
         self.schedule_preview()
+
+    def _maybe_start_cycle_anim(self):
+        """Start the Cycle hue-rotation loop if Pixel Art + Cycle FX is active."""
+        if self._pa_cycle_job:
+            return
+        self._pa_cycle_step = 0
+        self._tick_cycle()
+
+    def _tick_cycle(self):
+        """Advance one Cycle/Dither step, advance frame index in synthesised loop."""
+        effect = self.sidebar.get_selected_effect() if self.sidebar else ""
+        fx     = getattr(getattr(self, "_eff_pa_fx", None), "get", lambda: "None")()
+        if effect != "Pixel Art" or fx not in ("Cycle", "Dither"):
+            self._pa_cycle_job = None
+            return
+        n = len(_CYCLE_VARIANTS) if fx == "Cycle" else 4
+        self._pa_cycle_step = (self._pa_cycle_step + 1) % n
+        if self._frames_rgb:
+            self._anim_frame = self._pa_cycle_step
+        self._pa_cycle_job = self.root.after(220, self._tick_cycle)
+
+    def _stop_cycle_anim(self):
+        if self._pa_cycle_job:
+            self.root.after_cancel(self._pa_cycle_job)
+            self._pa_cycle_job = None
 
     def _rebuild_effect_section(self, effect: str):
         if self.settings is None:
@@ -1791,6 +2393,24 @@ class App:
                 for i, frame in enumerate(self._frames_rgb):
                     out_frames.append(apply_filters(frame, req.filters, seed=seed + i))
 
+                # Apply dialogue overlay if enabled
+                dlg_enabled = getattr(self, "_dlg_enabled", False)
+                if dlg_enabled and getattr(self, "_dlg_text", ""):
+                    from PIL import Image as _PILDlgA
+                    from io import BytesIO as _BIOa
+                    import numpy as _np_dlga
+                    total = len(out_frames)
+                    composited = []
+                    for i, frame_arr in enumerate(out_frames):
+                        _b_a = _BIOa()
+                        _PILDlgA.fromarray(frame_arr).save(_b_a, format="PNG")
+                        _b_out = self._maybe_apply_dialogue(
+                            _b_a.getvalue(), frame_idx=i, total_frames=total)
+                        composited.append(
+                            _np_dlga.array(
+                                _PILDlgA.open(_BIOa(_b_out)).convert("RGB"), dtype="uint8"))
+                    out_frames = composited
+
                 # Encode filtered frames as GIF
                 gif_bytes = _frames_to_gif_bytes(out_frames, req.output.gif.fps_out)
 
@@ -1816,6 +2436,131 @@ class App:
                 self.root.after(0, messagebox.showinfo, "Export complete", msg)
                 return
 
+            # ── Dialogue animated still → GIF/Video ─────────────────────────────
+            # When dialogue is enabled and source is a single still image,
+            # synthesise a typewriter animation so the text "types in".
+            _dlg_on  = getattr(self, "_dlg_enabled", False)
+            _dlg_txt = getattr(self, "_dlg_text", "")
+            _is_still = len(self._frames_rgb) <= 1
+            if _dlg_on and _dlg_txt and fmt in ("gif", "mp4") and _is_still:
+                import numpy as _np_dsa
+                from ascii_engine.filters import apply_filters as _af_dsa
+                from PIL import Image as _PILdsa
+                from io import BytesIO as _BIOdsa
+                if not self._frames_rgb and src_data:
+                    from ascii_engine.converter import decode_media_bytes
+                    _dec = decode_media_bytes(src_data, filename=self._file_name)
+                    self._frames_rgb = _dec.frames_rgb
+                if not self._frames_rgb:
+                    raise ValueError("No frame for animated dialogue export.")
+                _arr_dsa = _af_dsa(self._frames_rgb[0], req.filters,
+                                seed=req.determinism.seed)
+                ANIM_N = max(len(_dlg_txt), 24)
+                self.root.after(0, self.sidebar.set_status,
+                                "Rendering dialogue animation…", C["yellow"])
+                out_frames = []
+                for fi in range(ANIM_N):
+                    _b_dsa = _BIOdsa()
+                    _PILdsa.fromarray(_arr_dsa).save(_b_dsa, format="PNG")
+                    _b_out_dsa = self._maybe_apply_dialogue(
+                        _b_dsa.getvalue(), frame_idx=fi, total_frames=ANIM_N)
+                    out_frames.append(_np_dsa.array(
+                        _PILdsa.open(_BIOdsa(_b_out_dsa)).convert("RGB"), dtype="uint8"))
+                gif_bytes = _frames_to_gif_bytes(out_frames, 12)
+                if fmt == "gif":
+                    Path(out_path).write_bytes(gif_bytes)
+                else:
+                    try:
+                        from media.video_handler import gif_to_mp4  # type: ignore
+                        Path(out_path).write_bytes(gif_to_mp4(gif_bytes))
+                    except Exception:
+                        fallback = Path(out_path).with_suffix(".gif")
+                        fallback.write_bytes(gif_bytes)
+                        self.root.after(0, messagebox.showinfo, "Export note",
+                            f"MP4 encoder unavailable — saved as GIF:\n{fallback.name}")
+                        out_path = str(fallback)
+                msg = f"Exported: {Path(out_path).name}"
+                self.root.after(0, self.sidebar.set_status, "Done", C["green"])
+                self.root.after(0, self.statusbar.set_message, msg, C["green"])
+                self.root.after(0, messagebox.showinfo, "Export complete", msg)
+                return
+
+            # ✅ FIX: Pixel Art still export MUST bypass ASCII pipeline and MUST keep dialogue
+            if effect == "Pixel Art" and fmt in ("png", "jpeg", "jpg"):
+                from ascii_engine.filters import apply_filters as _af_exp
+                from ascii_engine.converter import decode_media_bytes
+                from PIL import Image as _PILExp
+                from io import BytesIO as _BIOexp
+                import numpy as _np_exp
+
+                # Ensure we have the base frame
+                if not self._frames_rgb:
+                    dec = decode_media_bytes(src_data, filename=self._file_name)
+                    self._frames_rgb = dec.frames_rgb
+
+                if not self._frames_rgb:
+                    raise ValueError("No frame available for Pixel Art export.")
+
+                arr0 = _af_exp(self._frames_rgb[0], req.filters, seed=req.determinism.seed)
+
+                # Convert to PIL and apply Pixel Art FX if active
+                pil0 = _PILExp.fromarray(_np_exp.asarray(arr0, dtype=_np_exp.uint8))
+
+                if hasattr(self, "_eff_pa_fx"):
+                    fx = self._eff_pa_fx.get()
+                    if fx not in ("", "None", "Glitch"):
+                        pil0 = apply_pixel_art_fx(pil0, fx, getattr(self, "_pa_cycle_step", 0))
+
+                # Apply dialogue overlay (render_dialogue works on PIL) via existing helper
+                b = _BIOexp()
+                pil0.save(b, format="PNG")
+                png_with_dlg = self._maybe_apply_dialogue(b.getvalue())
+
+                # Save final
+                pil_final = _PILExp.open(_BIOexp(png_with_dlg)).convert("RGB")
+                if fmt in ("jpeg", "jpg"):
+                    pil_final.save(out_path, format="JPEG", quality=95)
+                else:
+                    pil_final.save(out_path, format="PNG")
+
+                msg = f"Exported: {Path(out_path).name}"
+                self.root.after(0, self.sidebar.set_status, "Done", C["green"])
+                self.root.after(0, self.statusbar.set_message, msg, C["green"])
+                self.root.after(0, messagebox.showinfo, "Export complete", msg)
+                return
+
+            # ── Raster still export (PNG/JPEG) for other raster effects ───────────
+            if effect in RASTER_EFFECTS and fmt in ("png", "jpeg", "jpg"):
+                from ascii_engine.filters import apply_filters as _af_exp
+                from PIL import Image as _PILExp
+                from ascii_engine.converter import decode_media_bytes
+
+                if not self._frames_rgb:
+                    _dec = decode_media_bytes(src_data, filename=self._file_name)
+                    self._frames_rgb = _dec.frames_rgb
+
+                if not self._frames_rgb:
+                    raise ValueError("No frame available for raster export.")
+
+                _arr = _af_exp(self._frames_rgb[0], req.filters, seed=req.determinism.seed)
+                _pil_exp = _PILExp.fromarray(_arr)
+
+                # Apply dialogue overlay if enabled
+                _bio_exp = BytesIO()
+                _pil_exp.save(_bio_exp, format="PNG")
+                _png_exp = self._maybe_apply_dialogue(_bio_exp.getvalue())
+                _pil_final = _PILExp.open(BytesIO(_png_exp)).convert("RGB")
+
+                _pil_final.save(out_path,
+                                format="JPEG" if fmt in ("jpeg", "jpg") else "PNG",
+                                quality=95)
+
+                msg = f"Exported: {Path(out_path).name}"
+                self.root.after(0, self.sidebar.set_status, "Done", C["green"])
+                self.root.after(0, self.statusbar.set_message, msg, C["green"])
+                self.root.after(0, messagebox.showinfo, "Export complete", msg)
+                return
+
             # ── ASCII / still export: use standard convert_bytes pipeline ─────
             outputs = convert_bytes(src_data, req)
             data = outputs.get(fmt) or outputs.get(fmt + "_error")
@@ -1824,6 +2569,18 @@ class App:
                     f"Export failed for format '{fmt}'.\n"
                     "GIF and Video require animated input (GIF or video).\n"
                     "Video input has frames extracted automatically.")
+
+            # For ASCII-family output, still apply dialogue if PNG/JPEG
+            if fmt in ("png", "jpeg", "jpg"):
+                from PIL import Image as _PILDlg
+                _png_dlg = self._maybe_apply_dialogue(data)
+                if _png_dlg is not data:
+                    _pil_dlg = _PILDlg.open(BytesIO(_png_dlg)).convert("RGB")
+                    _bio_dlg = BytesIO()
+                    _pil_dlg.save(_bio_dlg,
+                                format="JPEG" if fmt in ("jpeg", "jpg") else "PNG",
+                                quality=95)
+                    data = _bio_dlg.getvalue()
 
             Path(out_path).write_bytes(data)
             msg = f"Exported: {Path(out_path).name}"
@@ -1836,7 +2593,6 @@ class App:
             self.root.after(0, self.sidebar.set_status, "Export failed", C["red"])
             self.root.after(0, self.statusbar.set_message, f"Export error: {err[:60]}", C["red"])
             self.root.after(0, messagebox.showerror, "Export error", err)
-
     def register_drop_target(self, widget):
         """Register a widget as a drag-and-drop target for file drops.
 
@@ -1922,7 +2678,7 @@ class App:
         s.ascii_scale.set(2.0)
         s.ascii_spacing.set(1.0)
         s.ascii_width.set(100)
-        s.ascii_charset.var.set("STANDARD")
+        s.ascii_charset.set("STANDARD")
         # Adjustments
         s.brightness.set(1.0)
         s.contrast.set(1.0)
@@ -1985,26 +2741,45 @@ class App:
         """Render one VHS frame: apply VHS filter to raw image, show filtered result directly."""
         try:
             from ascii_engine.filters import apply_filters
-            # Use first cached frame if available; otherwise decode file_data
+            from ascii_engine.converter import decode_media_bytes
+            import numpy as np
+            from PIL import Image
+            from io import BytesIO
+
+            # Build request FIRST (so we can read bg color safely)
+            req = self.settings.build_request()
+            req = self._apply_effect_params(req)
+            req.determinism.seed = getattr(self, "_vhs_frame_seed", 0)
+            req.validate()
+
+            # Resolve background color if needed
+            _bg2 = getattr(getattr(req, "output", None), "color", None)
+            _bg2 = tuple(getattr(_bg2, "background_rgb", (0, 0, 0))) if _bg2 else (0, 0, 0)
+
+            # Get first frame
+            rgb = None
             if self._frames_rgb:
                 rgb = self._frames_rgb[0]
             elif self._file_data:
-                from ascii_engine.converter import decode_media_bytes
-                _bg2 = getattr(getattr(req, "output", None), "color", None)
-                _bg2 = tuple(getattr(_bg2, "background_rgb", (0, 0, 0))) if _bg2 else (0, 0, 0)
                 decoded = decode_media_bytes(self._file_data, filename=self._file_name, bg_rgb=_bg2)
-                rgb = decoded.frames_rgb[0]
-                self._frames_rgb = decoded.frames_rgb
-            else:
+                if decoded.frames_rgb:
+                    self._frames_rgb = decoded.frames_rgb
+                    rgb = decoded.frames_rgb[0]
+
+            if rgb is None:
                 return
-            req = self.settings.build_request()
-            req = self._apply_effect_params(req)
-            req.determinism.seed = self._vhs_frame_seed
-            req.validate()
-            filtered = apply_filters(rgb, req.filters, seed=self._vhs_frame_seed)
+
+            # Apply VHS filters (seed can change each tick)
+            seed = getattr(self, "_vhs_frame_seed", 0)
+            filtered = apply_filters(rgb, req.filters, seed=seed)
+
+            # Make sure it's a proper uint8 array for PIL
+            arr = np.asarray(filtered, dtype=np.uint8)
+
             bio = BytesIO()
-            Image.fromarray(filtered).save(bio, format="PNG")
+            Image.fromarray(arr).save(bio, format="PNG")
             self.root.after(0, self.canvas.show_image, bio.getvalue())
+
         except Exception:
             pass
         finally:
@@ -2020,6 +2795,7 @@ class App:
         """Cancel every running animation loop."""
         self._stop_anim()
         self._stop_vhs_animation()
+        self._stop_cycle_anim()
         if self._preview_job:
             self.root.after_cancel(self._preview_job)
             self._preview_job = None
