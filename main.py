@@ -148,7 +148,8 @@ def _launch_p2p_integrated():
             if t == "room_assigned":
                 host_name = msg.get("host_name", "Host")
                 client_id = msg.get("client_id", "")
-                root.after(0, _open_client, name, room_code, host_name, client_id, p2p)
+                host_id   = msg.get("host_id", "")
+                root.after(0, _open_client, name, room_code, host_name, client_id, host_id, p2p)
             elif t == "error":
                 scr = state["screen"]
                 if scr:
@@ -173,7 +174,7 @@ def _launch_p2p_integrated():
         threading.Thread(target=_send_join, daemon=True).start()
 
     def _open_client(
-        name: str, room_code: str, host_name: str, client_id: str, p2p: P2PSession
+        name: str, room_code: str, host_name: str, client_id: str, host_id: str, p2p: P2PSession
     ):
         scr = state["screen"]
         if scr:
@@ -187,6 +188,7 @@ def _launch_p2p_integrated():
             host_name=host_name,
             p2p=p2p,
             client_id=client_id,
+            host_id=host_id,
         )
         app.register_drop_target(root)
 

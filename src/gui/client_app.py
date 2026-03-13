@@ -58,12 +58,15 @@ class ClientApp(App):
         host_name: str,
         p2p: P2PSession,
         client_id: str = "",
+        host_id: str = "",
     ):
         self._p2p_name   = name
         self._room_code  = room_code
         self._host_name  = host_name
         self._p2p        = p2p
         self._client_id  = client_id
+        self._host_id    = host_id
+        self._host_disconnected = False   # True once the host leaves; blocks further status updates
         self._file_sent      = False   # True once the first media chunk was sent
         self._sending        = False   # guard: don't send two files at once
         self._received_frames: list    = []   # PNG bytes from host, one per frame
@@ -187,6 +190,9 @@ class ClientApp(App):
         Instead of processing locally, read the bytes and send them to the host
         in chunks, followed by the current settings.
         """
+        if self._host_disconnected:
+            self._set_host_disconnected()  # re-pin the message in case something overwrote it
+            return
         # Sanitize path (same as parent)
         path = path.strip()
         if path.startswith("{") and path.endswith("}"):
@@ -287,6 +293,11 @@ class ClientApp(App):
         """Called on the P2P background thread."""
         t = msg.get("type", "")
 
+        # Once the host disconnects, ignore all incoming messages except
+        # connection_error (which could be the WebSocket closing cleanly).
+        if self._host_disconnected and t != "connection_error":
+            return
+
         if t == "preview_frame":
             p   = msg.get("payload", {})
             png = base64.b64decode(p["png_b64"])
@@ -325,11 +336,10 @@ class ClientApp(App):
             )
 
         elif t == "peer_left":
-            # Host disconnected
-            self.root.after(
-                0, lambda: self.sidebar.set_status("Host disconnected", C["red"])
-                if self.sidebar else None
-            )
+            departed_id = msg.get("client_id", "")
+            if departed_id == self._host_id:
+                self.root.after(0, self._set_host_disconnected)
+            # Si se fue otro cliente, no mostrar ningún mensaje
 
         elif t == "export_chunk":
             if self._pending_export:
@@ -357,6 +367,13 @@ class ClientApp(App):
             self.root.after(
                 0, messagebox.showerror, "Connection Error", err
             )
+
+    def _set_host_disconnected(self):
+        """Mark host as gone and pin a permanent status message that can't be overwritten."""
+        self._host_disconnected = True
+        self._sending = False  # unblock any stuck upload guard
+        if self.sidebar:
+            self.sidebar.set_status("Host disconnected", C["red"])
 
     def _show_preview_frame(self, png: bytes, is_final: bool):
         """Display a PNG frame received from the host and accumulate for export."""
@@ -424,6 +441,9 @@ class ClientApp(App):
 
     def export(self):
         """Export the frames received from the host."""
+        if self._host_disconnected:
+            self._set_host_disconnected()  # re-pin the message
+            return
         if not self._received_frames:
             messagebox.showwarning(
                 "Nothing to export",
